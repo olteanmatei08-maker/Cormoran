@@ -1,0 +1,165 @@
+{
+  "entities": {
+    "Event": {
+      "title": "Event",
+      "description": "Calendar event or activity for Patrula Cormoran",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "start": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "end": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "hasTime": {
+          "type": "boolean"
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": ["title", "start"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile for Patrula Cormoran scout member",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "phoneNumber": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": ["uid"]
+    },
+    "ScoutAccount": {
+      "title": "ScoutAccount",
+      "description": "Authentication credentials and record for scout members",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "passwordHash": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "salt": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "authProvider": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": ["uid", "email"]
+    },
+    "UserProgress": {
+      "title": "UserProgress",
+      "description": "Progress, badges and achievements for a scout member",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 50
+        }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/events/{eventId}": {
+      "schema": "Event",
+      "description": "Patrol events collection shared across all patrol members"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Registered scout user profiles"
+    },
+    "/scout_accounts/{accountId}": {
+      "schema": "ScoutAccount",
+      "description": "Scout account authentication credentials"
+    },
+    "/user_progress/{userId}": {
+      "schema": "UserProgress",
+      "description": "Scout member personal progress data and achievements"
+    }
+  }
+}

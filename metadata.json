@@ -1,0 +1,6 @@
+{
+  "name": "Cormo - Patrula Cormoran",
+  "description": "Aplicație pentru Patrula Cormoran: testament, istoric, pedagogie și calendar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
