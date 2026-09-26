@@ -159,6 +159,54 @@ app.post('/api/calendar/sync', (req, res) => {
   }
 });
 
+// GET ICS FOR SINGLE EVENT (NATIVE DEVICE CALENDAR IMPORT)
+app.get('/api/calendar/event/:id/ics', (req, res) => {
+  try {
+    const { id } = req.params;
+    const storedEvents = readJsonFile<any[]>(EVENTS_FILE, []);
+    const event = storedEvents.find((e) => e.id === id);
+    if (!event) {
+      return res.status(404).send('Evenimentul nu a fost găsit');
+    }
+
+    const formatIcsDate = (dStr: string) => {
+      const d = new Date(dStr);
+      return isNaN(d.getTime()) ? '' : d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    };
+
+    const start = formatIcsDate(event.start);
+    const end = formatIcsDate(event.end || event.start);
+
+    const icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Patrula Cormoran//RO',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      `UID:${event.id}@patrulacormoran.ro`,
+      `DTSTAMP:${formatIcsDate(new Date().toISOString())}`,
+      `DTSTART:${start}`,
+      `DTEND:${end}`,
+      `SUMMARY:${event.title || 'Eveniment Patrulă'}`,
+      event.description ? `DESCRIPTION:${event.description.replace(/\n/g, '\\n')}` : '',
+      event.location ? `LOCATION:${event.location}` : '',
+      'STATUS:CONFIRMED',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].filter(Boolean).join('\r\n');
+
+    res.set({
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'Content-Disposition': `inline; filename="${encodeURIComponent(event.title || 'eveniment')}.ics"`,
+      'Cache-Control': 'no-cache',
+    });
+    return res.send(icsContent);
+  } catch (err: any) {
+    return res.status(500).send('Eroare generare calendar');
+  }
+});
+
 // Helper to fetch Google Drive folder files
 async function fetchDriveFolderFiles(folderId: string, apiKey: string) {
   // 1. First try Google Drive API v3
@@ -251,7 +299,7 @@ async function fetchDriveFolderFiles(folderId: string, apiKey: string) {
       }
 
       if (files.length > 0) {
-        return files;
+        return files.reverse();
       }
     }
   } catch (err: any) {

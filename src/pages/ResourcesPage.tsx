@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   FileText,
   ExternalLink,
   Eye,
   X,
-  RefreshCw,
   Download,
 } from 'lucide-react';
 import {
@@ -13,44 +12,65 @@ import {
   fetchLiveDriveFolderFiles,
 } from '../services/driveResourcesService';
 
+const PRIORITY_ORDER = [
+  'carnet de progres',
+  'carnet de brevete',
+  'carnet cu rugaciuni',
+  'carnet cercetas ales',
+  'ceremonial acm',
+];
+
+function sortResources(list: DriveResourceFile[]): DriveResourceFile[] {
+  return [...list].sort((a, b) => {
+    const nameA = a.name.toLowerCase();
+    const nameB = b.name.toLowerCase();
+    const idxA = PRIORITY_ORDER.findIndex((p) => nameA.includes(p));
+    const idxB = PRIORITY_ORDER.findIndex((p) => nameB.includes(p));
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.name.localeCompare(b.name, 'ro');
+  });
+}
+
 export const ResourcesPage: React.FC = () => {
   // Instant load from localStorage
-  const [files, setFiles] = useState<DriveResourceFile[]>(getCachedDriveFiles);
+  const [files, setFiles] = useState<DriveResourceFile[]>(() => sortResources(getCachedDriveFiles()));
   const [activeFile, setActiveFile] = useState<DriveResourceFile | null>(null);
-  const [loading, setLoading] = useState(false);
 
   // Auto-sync function
-  const refreshFiles = useCallback(async (showIndicator = false) => {
+  const refreshFiles = useCallback(async () => {
     if (!navigator.onLine) return;
     try {
-      if (showIndicator) setLoading(true);
       const updated = await fetchLiveDriveFolderFiles();
       if (updated && updated.length > 0) {
-        setFiles(updated);
+        setFiles(sortResources(updated));
       }
-    } finally {
-      if (showIndicator) setLoading(false);
+    } catch {
+      // Ignore
     }
   }, []);
 
   // Initial fetch on mount
   useEffect(() => {
-    refreshFiles(false);
+    refreshFiles();
   }, [refreshFiles]);
 
   // Exact 60 seconds auto-refresh loop (files appear/disappear if modified in folder)
   useEffect(() => {
     const interval = setInterval(() => {
-      refreshFiles(false);
+      refreshFiles();
     }, 60000);
     return () => clearInterval(interval);
   }, [refreshFiles]);
+
+  const sortedFiles = useMemo(() => sortResources(files), [files]);
 
   return (
     <div className="space-y-4 max-w-4xl mx-auto py-2">
       {/* File list */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-        {files.map((file) => {
+        {sortedFiles.map((file) => {
           const cleanTitle = file.name.replace(/\.pdf$/i, '').trim();
 
           return (
@@ -81,7 +101,7 @@ export const ResourcesPage: React.FC = () => {
                   className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
                 >
                   <Eye className="w-4 h-4 text-slate-300" />
-                  <span>Aplicație</span>
+                  <span>Deschide</span>
                 </button>
 
                 <a

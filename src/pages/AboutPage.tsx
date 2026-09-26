@@ -129,8 +129,7 @@ export const AboutPage: React.FC = () => {
             rel="noopener noreferrer"
             className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-emerald-800 hover:bg-emerald-700 active:scale-95 border border-emerald-500/70 text-white font-bold text-sm sm:text-base tracking-wide shadow-lg shadow-emerald-950/80 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2.5 text-center group"
           >
-            <span className="text-lg">🌐</span>
-            <span>vezi site ul patrulei</span>
+            <span>Vezi site-ul patrulei</span>
             <ExternalLink className="w-4 h-4 text-emerald-300 group-hover:translate-x-0.5 transition-transform" />
           </a>
         </div>

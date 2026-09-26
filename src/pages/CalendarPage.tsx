@@ -86,20 +86,82 @@ function getRelativeDateLabel(dateStr: string): { label: string; isUrgent: boole
   return null;
 }
 
-// Generate Google Calendar direct "Add to Calendar" link
-function getAddToGoogleCalendarLink(ev: CalendarEvent): string {
-  const title = encodeURIComponent(ev.title || 'Eveniment Patrulă');
-  const details = encodeURIComponent(ev.description || '');
-  const location = encodeURIComponent(ev.location || '');
-
-  const formatGCalDate = (dStr: string) => {
-    return dStr.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+// Generate downloadable RFC-5545 iCalendar file
+function downloadEventIcs(ev: CalendarEvent) {
+  const formatIcsDate = (dStr: string) => {
+    const d = new Date(dStr);
+    return isNaN(d.getTime()) ? '' : d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
   };
 
-  const startFormatted = formatGCalDate(ev.start);
-  const endFormatted = formatGCalDate(ev.end || ev.start);
+  const start = formatIcsDate(ev.start);
+  const end = formatIcsDate(ev.end || ev.start);
 
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startFormatted}/${endFormatted}&details=${details}&location=${location}`;
+  const icsContent = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Patrula Cormoran//RO',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${ev.id || Date.now()}@patrulacormoran.ro`,
+    `DTSTAMP:${formatIcsDate(new Date().toISOString())}`,
+    `DTSTART:${start}`,
+    `DTEND:${end}`,
+    `SUMMARY:${ev.title || 'Eveniment Patrulă'}`,
+    ev.description ? `DESCRIPTION:${ev.description.replace(/\n/g, '\\n')}` : '',
+    ev.location ? `LOCATION:${ev.location}` : '',
+    'STATUS:CONFIRMED',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].filter(Boolean).join('\r\n');
+
+  const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(ev.title || 'eveniment').replace(/[^a-zA-Z0-9]/g, '_')}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// Directly open the mobile device's native Calendar app (Google Calendar or default phone calendar)
+function handleAddToDeviceCalendar(ev: CalendarEvent) {
+  const ua = navigator.userAgent || '';
+  const isAndroid = /android/i.test(ua);
+  const isIOS =
+    /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  const startDate = new Date(ev.start);
+  const startMs = isNaN(startDate.getTime()) ? Date.now() : startDate.getTime();
+  const endDate = ev.end ? new Date(ev.end) : new Date(startMs + 60 * 60 * 1000);
+  const endMs = isNaN(endDate.getTime()) ? startMs + 60 * 60 * 1000 : endDate.getTime();
+
+  if (isAndroid) {
+    // Direct Android intent to Google Calendar / default phone Calendar application
+    const intentUrl = `intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.item/event;S.title=${encodeURIComponent(
+      ev.title
+    )};S.eventLocation=${encodeURIComponent(ev.location || '')};S.description=${encodeURIComponent(
+      ev.description || ''
+    )};l.beginTime=${startMs};l.endTime=${endMs};end`;
+
+    const timer = setTimeout(() => {
+      downloadEventIcs(ev);
+    }, 1200);
+
+    window.location.href = intentUrl;
+    return;
+  }
+
+  if (isIOS) {
+    // On iPhone/iPad, opening the .ics stream prompts native iOS Calendar event sheet directly
+    window.location.href = `/api/calendar/event/${encodeURIComponent(ev.id)}/ics`;
+    return;
+  }
+
+  // Universal / Desktop fallback (downloads .ics file to open directly in Calendar app)
+  downloadEventIcs(ev);
 }
 
 export const CalendarPage: React.FC = () => {
@@ -346,8 +408,6 @@ export const CalendarPage: React.FC = () => {
                       ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(ev.location)}`
                       : null;
 
-                    const addToGCalUrl = getAddToGoogleCalendarLink(ev);
-
                     return (
                       <article
                         key={ev.id}
@@ -392,16 +452,14 @@ export const CalendarPage: React.FC = () => {
 
                           {/* Quick Add / Open */}
                           <div className="flex items-center gap-1.5 shrink-0">
-                            <a
-                              href={addToGCalUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white transition-colors"
-                              title="Salvează în propriul Google Calendar"
-                              aria-label="Adaugă în Google Calendar"
+                            <button
+                              onClick={() => handleAddToDeviceCalendar(ev)}
+                              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                              title="Adaugă direct în aplicația de calendar a telefonului"
+                              aria-label="Adaugă în aplicația de calendar"
                             >
                               <CalendarPlus className="w-4 h-4 text-slate-400 hover:text-white" />
-                            </a>
+                            </button>
 
                             {ev.htmlLink && (
                               <a
@@ -604,17 +662,27 @@ export const CalendarPage: React.FC = () => {
                             <h3 className="text-sm sm:text-base font-bold text-white">
                               {ev.title}
                             </h3>
-                            {ev.htmlLink && (
-                              <a
-                                href={ev.htmlLink}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-slate-400 hover:text-white p-1"
-                                title="Deschide în Google Calendar"
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => handleAddToDeviceCalendar(ev)}
+                                className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                                title="Adaugă direct în aplicația de calendar a telefonului"
+                                aria-label="Adaugă în aplicația de calendar"
                               >
-                                <ExternalLink className="w-3.5 h-3.5" />
-                              </a>
-                            )}
+                                <CalendarPlus className="w-3.5 h-3.5 text-slate-400 hover:text-white" />
+                              </button>
+                              {ev.htmlLink && (
+                                <a
+                                  href={ev.htmlLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-slate-400 hover:text-white p-1"
+                                  title="Deschide în Google Calendar"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                            </div>
                           </div>
 
                           <div className="flex flex-wrap items-center gap-3 text-xs">
