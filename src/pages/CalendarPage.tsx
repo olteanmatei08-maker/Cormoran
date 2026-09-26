@@ -2,12 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { CalendarEvent } from '../types';
 import {
   getCachedCalendarEvents,
-  fetchServerCalendarEvents,
+  fetchPublicGoogleCalendarEvents,
+  GOOGLE_CALENDAR_PUBLIC_URL,
 } from '../services/googleCalendar';
-import {
-  syncGoogleAccountData,
-  USER_EMAIL_HINT,
-} from '../services/googleSyncService';
 import {
   Calendar as CalendarIcon,
   RefreshCw,
@@ -19,8 +16,8 @@ import {
   CalendarDays,
   CloudSun,
   WifiOff,
-  CloudLightning,
-  CheckCircle2,
+  Navigation,
+  CalendarPlus,
 } from 'lucide-react';
 import { WeatherCluj } from '../components/WeatherCluj';
 import { checkAndDispatchEventNotifications } from '../services/notificationService';
@@ -68,7 +65,7 @@ function getEventTimeDisplay(ev: CalendarEvent): string | null {
   }
 }
 
-function getRelativeDateLabel(dateStr: string): string | null {
+function getRelativeDateLabel(dateStr: string): { label: string; isUrgent: boolean } | null {
   const target = parseDateSafe(dateStr);
   if (isNaN(target.getTime())) return null;
 
@@ -80,22 +77,35 @@ function getRelativeDateLabel(dateStr: string): string | null {
 
   const diffDays = Math.round((targetDay.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
-  if (diffDays === 0) return 'Azi';
-  if (diffDays === 1) return 'Mâine';
-  if (diffDays === 2) return 'Poimâine';
-  if (diffDays > 2 && diffDays <= 7) return `Peste ${diffDays} zile`;
-  if (diffDays > 7 && diffDays <= 14) return 'Săptămâna viitoare';
-  if (diffDays < 0) return 'Încheiat';
+  if (diffDays === 0) return { label: 'Azi', isUrgent: true };
+  if (diffDays === 1) return { label: 'Mâine', isUrgent: true };
+  if (diffDays === 2) return { label: 'Poimâine', isUrgent: false };
+  if (diffDays > 2 && diffDays <= 7) return { label: `Peste ${diffDays} zile`, isUrgent: false };
+  if (diffDays > 7 && diffDays <= 14) return { label: 'Săptămâna viitoare', isUrgent: false };
+  if (diffDays < 0) return { label: 'Încheiat', isUrgent: false };
   return null;
 }
 
+// Generate Google Calendar direct "Add to Calendar" link
+function getAddToGoogleCalendarLink(ev: CalendarEvent): string {
+  const title = encodeURIComponent(ev.title || 'Eveniment Patrulă');
+  const details = encodeURIComponent(ev.description || '');
+  const location = encodeURIComponent(ev.location || '');
+
+  const formatGCalDate = (dStr: string) => {
+    return dStr.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  };
+
+  const startFormatted = formatGCalDate(ev.start);
+  const endFormatted = formatGCalDate(ev.end || ev.start);
+
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startFormatted}/${endFormatted}&details=${details}&location=${location}`;
+}
+
 export const CalendarPage: React.FC = () => {
-  // Real events only (loaded instantly from cache, no demo events)
+  // Real patrol events loaded instantaneously from localStorage
   const [events, setEvents] = useState<CalendarEvent[]>(getCachedCalendarEvents);
   const [loading, setLoading] = useState(false);
-  const [syncingGoogle, setSyncingGoogle] = useState(false);
-  const [syncSuccessMsg, setSyncSuccessMsg] = useState<string | null>(null);
-  const [syncError, setSyncError] = useState<string | null>(null);
 
   const [isOnline, setIsOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -109,52 +119,22 @@ export const CalendarPage: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDate());
 
-  // Background fetch function (loads real events stored permanently on server)
+  // Background fetch function (queries Google Calendar public API + server fallback)
   const refreshEvents = useCallback(async (silent: boolean = false) => {
     if (!navigator.onLine) return;
 
     try {
       if (!silent) setLoading(true);
-      const res = await fetchServerCalendarEvents();
-      if (res.events) {
+      const res = await fetchPublicGoogleCalendarEvents();
+      if (res.events && res.events.length > 0) {
         setEvents(res.events);
         checkAndDispatchEventNotifications(res.events);
       }
     } catch (err) {
-      console.warn('Eroare actualizare evenimente:', err);
+      console.warn('Eroare actualizare calendar:', err);
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
-
-  // Sync directly with user's Google Account (olteanmatei08@gmail.com)
-  const handleGoogleSync = async () => {
-    setSyncingGoogle(true);
-    setSyncError(null);
-    setSyncSuccessMsg(null);
-
-    try {
-      const result = await syncGoogleAccountData();
-      setSyncSuccessMsg(`Sincronizat cu succes! S-au importat ${result.eventsCount} evenimente și ${result.resourcesCount} documente.`);
-      refreshEvents(false);
-      setTimeout(() => setSyncSuccessMsg(null), 4000);
-    } catch (err: any) {
-      setSyncError(err?.message || 'Eroare la sincronizarea cu Google.');
-      setTimeout(() => setSyncError(null), 5000);
-    } finally {
-      setSyncingGoogle(false);
-    }
-  };
-
-  // Listen for sync event from other parts of the app
-  useEffect(() => {
-    const handleEventsUpdated = (e: any) => {
-      if (Array.isArray(e.detail)) {
-        setEvents(e.detail);
-      }
-    };
-    window.addEventListener('cormo_events_updated', handleEventsUpdated);
-    return () => window.removeEventListener('cormo_events_updated', handleEventsUpdated);
   }, []);
 
   // Online / Offline listener
@@ -181,6 +161,15 @@ export const CalendarPage: React.FC = () => {
   useEffect(() => {
     refreshEvents(true);
   }, [refreshEvents]);
+
+  // Auto-refresh periodically every 3 minutes
+  useEffect(() => {
+    if (!isOnline) return;
+    const interval = setInterval(() => {
+      refreshEvents(true);
+    }, 180000);
+    return () => clearInterval(interval);
+  }, [isOnline, refreshEvents]);
 
   // Filter events into upcoming
   const now = new Date();
@@ -211,98 +200,113 @@ export const CalendarPage: React.FC = () => {
   });
 
   return (
-    <div className="space-y-5 max-w-4xl mx-auto py-1">
-      {/* Top Navigation & Controls Switcher */}
-      <section className="p-3 sm:p-4 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl flex flex-wrap items-center justify-between gap-3">
-        {/* Switcher Button: Calendar vs Vremea Sâmbătă */}
-        <div className="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
-          <button
-            onClick={() => setActiveSubTab('calendar')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 select-none ${
-              activeSubTab === 'calendar'
-                ? 'bg-emerald-900 border border-emerald-600/50 text-white shadow-md shadow-emerald-950/70'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <CalendarIcon className="w-3.5 h-3.5" />
-            <span>Calendar</span>
-          </button>
+    <div className="space-y-6 max-w-4xl mx-auto py-2">
+      {/* Top Header Card */}
+      <section className="p-5 sm:p-6 rounded-3xl bg-[#0c1017] border border-slate-800 shadow-2xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-blue-950/80 text-blue-400 border border-blue-800/60 inline-flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                Google Calendar Public
+              </span>
+            </div>
+            <h1 className="text-xl sm:text-2xl font-bold text-white uppercase tracking-wider font-serif-title">
+              Calendarul Patrulei
+            </h1>
+            <p className="text-xs text-slate-400 font-light">
+              Evenimentele, ședințele și adunările oficiale ale Patrulei Cormoran.
+            </p>
+          </div>
 
-          <button
-            onClick={() => setActiveSubTab('meteo')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 select-none ${
-              activeSubTab === 'meteo'
-                ? 'bg-emerald-900 border border-emerald-600/50 text-white shadow-md shadow-emerald-950/70'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <CloudSun className="w-3.5 h-3.5" />
-            <span>Vremea Sâmbătă</span>
-          </button>
+          {/* Quick External Subscribe Button */}
+          <div className="flex items-center gap-2">
+            <a
+              href={GOOGLE_CALENDAR_PUBLIC_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-2 transition-all shadow-sm"
+              title="Deschide calendarul direct în Google Calendar"
+            >
+              <span>Deschide în Google</span>
+              <ExternalLink className="w-3.5 h-3.5 text-blue-400" />
+            </a>
+
+            <button
+              onClick={() => refreshEvents(false)}
+              disabled={loading || !isOnline}
+              className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer text-xs active:scale-95 disabled:opacity-50"
+              title="Actualizează calendarul"
+              aria-label="Actualizează calendar"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-400' : 'text-slate-400'}`} />
+            </button>
+          </div>
         </div>
 
-        {/* Calendar Specific Actions */}
-        {activeSubTab === 'calendar' && (
-          <div className="flex items-center gap-2">
-            {/* View toggle (Viitoare vs Lună) */}
+        {/* View Switchers Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pt-3 border-t border-slate-800/80">
+          {/* Calendar vs Vremea Sâmbătă */}
+          <div className="flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
+            <button
+              onClick={() => setActiveSubTab('calendar')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 select-none ${
+                activeSubTab === 'calendar'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-950/60'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <CalendarIcon className="w-3.5 h-3.5" />
+              <span>Evenimente</span>
+            </button>
+
+            <button
+              onClick={() => setActiveSubTab('meteo')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 select-none ${
+                activeSubTab === 'meteo'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-950/60'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <CloudSun className="w-3.5 h-3.5" />
+              <span>Vremea Sâmbătă</span>
+            </button>
+          </div>
+
+          {/* Toggle Agenda (Viitoare) vs Lună (Grid) */}
+          {activeSubTab === 'calendar' && (
             <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
               <button
                 onClick={() => setViewMode('upcoming')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
                   viewMode === 'upcoming'
                     ? 'bg-slate-800 text-white'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Viitoare
+                Agendă ({upcomingEvents.length})
               </button>
               <button
                 onClick={() => setViewMode('month')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
                   viewMode === 'month'
                     ? 'bg-slate-800 text-white'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Lună
+                Vedere Lună
               </button>
             </div>
-
-            {/* Google Sync Button */}
-            <button
-              onClick={handleGoogleSync}
-              disabled={syncingGoogle || !isOnline}
-              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-all cursor-pointer text-xs font-bold flex items-center gap-1.5 active:scale-95 shadow-md disabled:opacity-50"
-              title="Sincronizează datele din Google Calendar"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${syncingGoogle ? 'animate-spin' : ''}`} />
-              <span>{syncingGoogle ? 'Se importă...' : 'Sincronizează Google'}</span>
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </section>
-
-      {/* Sync feedback alerts */}
-      {syncSuccessMsg && (
-        <div className="p-3 bg-emerald-950/80 border border-emerald-600 rounded-xl text-emerald-200 text-xs flex items-center gap-2 shadow-lg">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>{syncSuccessMsg}</span>
-        </div>
-      )}
-
-      {syncError && (
-        <div className="p-3 bg-red-950/80 border border-red-800 rounded-xl text-red-200 text-xs flex items-center gap-2">
-          <CloudLightning className="w-4 h-4 text-red-400 shrink-0" />
-          <span>{syncError}</span>
-        </div>
-      )}
 
       {/* Offline Status Badge */}
       {!isOnline && activeSubTab === 'calendar' && (
-        <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-amber-200 text-xs flex items-center justify-between gap-3">
+        <div className="p-3.5 bg-amber-950/40 border border-amber-800/60 rounded-2xl text-amber-200 text-xs flex items-center justify-between gap-3 shadow-md">
           <div className="flex items-center gap-2">
             <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>Mod offline: Evenimentele sunt salvate pe dispozitiv.</span>
+            <span>Mod offline activ: Evenimentele sunt încărcate instantaneu din memoria locală a telefonului.</span>
           </div>
           <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-900/60 text-amber-300 shrink-0">
             Offline
@@ -316,132 +320,162 @@ export const CalendarPage: React.FC = () => {
       {/* CALENDAR PAGE VIEW */}
       {activeSubTab === 'calendar' && (
         <>
-          {/* UPCOMING EVENTS VIEW - NO DEMO EVENTS */}
+          {/* UPCOMING AGENDA VIEW */}
           {viewMode === 'upcoming' && (
-            <section className="space-y-3">
-              <div className="flex items-center justify-between text-xs text-slate-400 px-1 pb-1">
-                <span className="font-semibold uppercase tracking-wider text-slate-400">
-                  Evenimente care urmează ({upcomingEvents.length})
-                </span>
-                <span className="text-[11px] text-blue-400 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                  <span>Cont: {USER_EMAIL_HINT}</span>
-                </span>
-              </div>
-
+            <section className="space-y-4">
               {upcomingEvents.length > 0 ? (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {upcomingEvents.map((ev) => {
                     const startDate = parseDateSafe(ev.start);
                     const relativeBadge = getRelativeDateLabel(ev.start);
                     const timeDisplay = getEventTimeDisplay(ev);
                     const hasLocation = !!(ev.location && ev.location.trim().length > 0);
 
-                    const dateDisplay = isNaN(startDate.getTime())
-                      ? ev.start
-                      : startDate.toLocaleDateString('ro-RO', {
-                          weekday: 'long',
-                          day: 'numeric',
-                          month: 'long',
-                        });
+                    // Formatted day numbers and names
+                    const dayNumber = !isNaN(startDate.getTime()) ? startDate.getDate() : '';
+                    const monthShort = !isNaN(startDate.getTime())
+                      ? startDate.toLocaleDateString('ro-RO', { month: 'short' }).toUpperCase()
+                      : '';
+                    const weekdayFull = !isNaN(startDate.getTime())
+                      ? startDate.toLocaleDateString('ro-RO', { weekday: 'long' })
+                      : '';
+
+                    const mapsUrl = ev.location
+                      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(ev.location)}`
+                      : null;
+
+                    const addToGCalUrl = getAddToGoogleCalendarLink(ev);
 
                     return (
-                      <div
+                      <article
                         key={ev.id}
-                        className="p-5 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-3 hover:border-slate-700 transition-colors"
+                        className="p-5 sm:p-6 rounded-3xl bg-[#0c1017] border border-slate-800 hover:border-slate-700 shadow-xl space-y-4 transition-all"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-                                {dateDisplay}
+                        {/* Top row: Date badge, relative label, external links */}
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3.5">
+                            {/* Visual Date Badge */}
+                            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col items-center justify-center shrink-0 shadow-inner">
+                              <span className="text-[10px] font-bold tracking-wider text-blue-400 leading-none">
+                                {monthShort}
                               </span>
-                              {relativeBadge && (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">
-                                  {relativeBadge}
-                                </span>
-                              )}
+                              <span className="text-xl sm:text-2xl font-black text-white leading-none mt-1">
+                                {dayNumber}
+                              </span>
                             </div>
-                            <h3 className="text-base sm:text-lg font-bold text-white">
-                              {ev.title}
-                            </h3>
+
+                            {/* Title & Weekday */}
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs font-semibold text-slate-400 capitalize">
+                                  {weekdayFull}
+                                </span>
+                                {relativeBadge && (
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                      relativeBadge.isUrgent
+                                        ? 'bg-blue-950 text-blue-300 border border-blue-700'
+                                        : 'bg-slate-900 text-slate-300 border border-slate-700'
+                                    }`}
+                                  >
+                                    {relativeBadge.label}
+                                  </span>
+                                )}
+                              </div>
+                              <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
+                                {ev.title}
+                              </h2>
+                            </div>
                           </div>
 
-                          {ev.htmlLink && (
+                          {/* Quick Add / Open */}
+                          <div className="flex items-center gap-1.5 shrink-0">
                             <a
-                              href={ev.htmlLink}
+                              href={addToGCalUrl}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-slate-500 hover:text-white p-1"
-                              title="Deschide în Google Calendar"
+                              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white transition-colors"
+                              title="Salvează în propriul Google Calendar"
+                              aria-label="Adaugă în Google Calendar"
                             >
-                              <ExternalLink className="w-4 h-4" />
+                              <CalendarPlus className="w-4 h-4 text-blue-400" />
+                            </a>
+
+                            {ev.htmlLink && (
+                              <a
+                                href={ev.htmlLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white transition-colors"
+                                title="Deschide în Google Calendar"
+                                aria-label="Deschide în Google Calendar"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </a>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Details row: Time & Location */}
+                        <div className="flex flex-wrap items-center gap-3 text-xs">
+                          {timeDisplay && (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-200">
+                              <Clock className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                              <span className="font-semibold text-white">{timeDisplay}</span>
+                            </div>
+                          )}
+
+                          {hasLocation && (
+                            <a
+                              href={mapsUrl || '#'}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-colors group"
+                              title="Deschide pe Google Maps"
+                            >
+                              <MapPin className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                              <span className="truncate max-w-[220px] sm:max-w-md">{ev.location!.trim()}</span>
+                              <Navigation className="w-3 h-3 text-slate-500 group-hover:text-blue-400 transition-colors ml-0.5 shrink-0" />
                             </a>
                           )}
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
-                          {timeDisplay && (
-                            <div className="flex items-center gap-1.5 text-slate-200">
-                              <Clock className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                              <span className="font-semibold text-white bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                                {timeDisplay}
-                              </span>
-                            </div>
-                          )}
-                          {hasLocation && (
-                            <div className="flex items-center gap-1.5 text-slate-400">
-                              <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                              <span className="truncate max-w-[260px] sm:max-w-md">{ev.location!.trim()}</span>
-                            </div>
-                          )}
-                        </div>
-
+                        {/* Description */}
                         {ev.description && (
-                          <p className="text-xs text-slate-400 pt-2 leading-relaxed border-t border-slate-800/80">
-                            {ev.description}
-                          </p>
+                          <div className="pt-3 border-t border-slate-800/80">
+                            <p className="text-xs text-slate-300 leading-relaxed font-light">
+                              {ev.description}
+                            </p>
+                          </div>
                         )}
-                      </div>
+                      </article>
                     );
                   })}
                 </div>
               ) : (
-                <div className="p-8 sm:p-12 text-center bg-[#0c1017] rounded-2xl border border-slate-800 space-y-4">
+                <div className="p-10 sm:p-14 text-center bg-[#0c1017] rounded-3xl border border-slate-800 space-y-3">
                   <CalendarDays className="w-12 h-12 text-slate-600 mx-auto" />
-                  <div className="space-y-1">
-                    <p className="text-white font-bold text-base sm:text-lg">
-                      Niciun eveniment importat încă din Google Calendar
-                    </p>
-                    <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-                      Evenimentele reale din contul tău Google ({USER_EMAIL_HINT}) nu au fost încă sincronizate.
-                      Apasă butonul de mai jos pentru a le importa o singură dată; acestea vor rămâne salvate automat pe orice telefon și dispozitiv.
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={handleGoogleSync}
-                    disabled={syncingGoogle || !isOnline}
-                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-lg inline-flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${syncingGoogle ? 'animate-spin' : ''}`} />
-                    <span>{syncingGoogle ? 'Se importă evenimentele...' : 'Importă din Google Calendar'}</span>
-                  </button>
+                  <p className="text-white font-bold text-base sm:text-lg">
+                    Nu sunt evenimente viitoare programate
+                  </p>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                    Evenimentele nou adăugate în calendarul de patrulă vor apărea automat aici.
+                  </p>
                 </div>
               )}
             </section>
           )}
 
-          {/* MOBILE-OPTIMIZED MONTH VIEW */}
+          {/* MONTH VIEW GRID */}
           {viewMode === 'month' && (
             <section className="space-y-4">
-              <div className="p-4 sm:p-6 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-4">
+              <div className="p-5 sm:p-6 rounded-3xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-4">
                 {/* Month Navigation */}
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                   <h2 className="text-base sm:text-lg font-bold text-white capitalize font-serif-title">
                     {monthName}
                   </h2>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => {
                         const prev = new Date(year, month - 1, 1);
@@ -459,7 +493,7 @@ export const CalendarPage: React.FC = () => {
                         setCurrentDate(now);
                         setSelectedDay(now.getDate());
                       }}
-                      className="px-2.5 py-1 rounded-lg bg-slate-900 text-xs text-slate-300 hover:text-white border border-slate-800 cursor-pointer transition-colors font-medium"
+                      className="px-3 py-1 rounded-lg bg-slate-900 text-xs text-slate-300 hover:text-white border border-slate-800 cursor-pointer transition-colors font-medium"
                     >
                       Azi
                     </button>
@@ -508,13 +542,13 @@ export const CalendarPage: React.FC = () => {
                       <button
                         key={`day-${day}`}
                         onClick={() => setSelectedDay(day)}
-                        className={`aspect-square w-full rounded-xl flex flex-col items-center justify-center relative transition-all cursor-pointer ${
+                        className={`aspect-square w-full rounded-2xl flex flex-col items-center justify-center relative transition-all cursor-pointer ${
                           isSelected
-                            ? 'bg-emerald-900 border border-emerald-600/60 text-white font-bold shadow-lg shadow-emerald-950/70 scale-[1.03]'
+                            ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-950/70 scale-[1.03]'
                             : isToday
-                            ? 'bg-slate-900 border border-emerald-500/80 text-white font-bold'
+                            ? 'bg-slate-900 border border-blue-500 text-white font-bold'
                             : hasEvents
-                            ? 'bg-slate-900 text-slate-200 hover:bg-slate-800/80 border border-slate-800'
+                            ? 'bg-slate-900 text-slate-200 hover:bg-slate-800 border border-slate-800'
                             : 'bg-slate-950/40 text-slate-400 hover:bg-slate-900/60 border border-slate-900/60'
                         }`}
                       >
@@ -528,7 +562,7 @@ export const CalendarPage: React.FC = () => {
                               dayEvents.slice(0, 3).map((_, dotIdx) => (
                                 <span
                                   key={dotIdx}
-                                  className="w-1.5 h-1.5 rounded-full bg-emerald-400"
+                                  className="w-1.5 h-1.5 rounded-full bg-blue-400"
                                 />
                               ))
                             )}
@@ -540,21 +574,21 @@ export const CalendarPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Selected Date Agenda Card */}
-              <div className="p-5 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-3">
+              {/* Selected Day Agenda Card */}
+              <div className="p-5 sm:p-6 rounded-3xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-3">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800">
                   <span className="text-xs font-semibold text-slate-400 capitalize">
                     {selectedDateFormatted}
                   </span>
-                  <span className="text-[11px] text-slate-500">
+                  <span className="text-[11px] text-slate-500 font-medium">
                     {selectedDayEvents.length === 0
-                      ? 'Liber'
+                      ? 'Niciun eveniment'
                       : `${selectedDayEvents.length} eveniment${selectedDayEvents.length > 1 ? 'e' : ''}`}
                   </span>
                 </div>
 
                 {selectedDayEvents.length > 0 ? (
-                  <div className="space-y-2.5 pt-1">
+                  <div className="space-y-3 pt-1">
                     {selectedDayEvents.map((ev) => {
                       const timeDisplay = getEventTimeDisplay(ev);
                       const hasLocation = !!(ev.location && ev.location.trim().length > 0);
@@ -562,18 +596,18 @@ export const CalendarPage: React.FC = () => {
                       return (
                         <div
                           key={ev.id}
-                          className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-2"
+                          className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2.5"
                         >
                           <div className="flex items-start justify-between gap-3">
-                            <h4 className="text-sm sm:text-base font-bold text-white">
+                            <h3 className="text-sm sm:text-base font-bold text-white">
                               {ev.title}
-                            </h4>
+                            </h3>
                             {ev.htmlLink && (
                               <a
                                 href={ev.htmlLink}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="text-slate-500 hover:text-white p-1"
+                                className="text-slate-400 hover:text-white p-1"
                                 title="Deschide în Google Calendar"
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
@@ -581,25 +615,26 @@ export const CalendarPage: React.FC = () => {
                             )}
                           </div>
 
-                          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                          <div className="flex flex-wrap items-center gap-3 text-xs">
                             {timeDisplay && (
                               <div className="flex items-center gap-1.5 text-slate-200">
-                                <Clock className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                                <span className="font-semibold text-white bg-slate-800 px-2 py-0.5 rounded">
+                                <Clock className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                                <span className="font-semibold text-white bg-slate-800 px-2 py-0.5 rounded-lg">
                                   {timeDisplay}
                                 </span>
                               </div>
                             )}
+
                             {hasLocation && (
-                              <div className="flex items-center gap-1.5 text-slate-400">
-                                <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                <span className="truncate max-w-[260px] sm:max-w-md">{ev.location!.trim()}</span>
+                              <div className="flex items-center gap-1.5 text-slate-300">
+                                <MapPin className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                                <span className="truncate max-w-[240px] sm:max-w-md">{ev.location!.trim()}</span>
                               </div>
                             )}
                           </div>
 
                           {ev.description && (
-                            <p className="text-xs text-slate-400 pt-1 leading-relaxed border-t border-slate-800/60">
+                            <p className="text-xs text-slate-400 pt-1 leading-relaxed border-t border-slate-800/80">
                               {ev.description}
                             </p>
                           )}

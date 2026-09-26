@@ -1,0 +1,20 @@
+[
+  {
+    "id": "carnet-progres",
+    "title": "Carnet de progres",
+    "driveUrl": "https://drive.google.com/file/d/1hXqLPzMTk1vjCBAF78hn2kE1RF8JdtDa/view?usp=drivesdk",
+    "category": "tehnici",
+    "type": "pdf",
+    "description": "Poteci și probe pentru cercetași și cercetașe: Promisiune, Clasa a II-a, Clasa I.",
+    "createdAt": "2026-09-23T16:44:34.909Z"
+  },
+  {
+    "id": "carnet-brevete",
+    "title": "Carnet de brevete",
+    "driveUrl": "https://docs.google.com/document/d/1dhh4k7Jns1cdKYgZ8PJtKGUzVQH6UOTd/edit?usp=drivesdk",
+    "category": "tehnici",
+    "type": "doc",
+    "description": "Caiet de brevete ACM: Misiune, Viața Creștină, Viața în Natură, Sport, Descoperirea Oamenilor, Descoperirea Naturii, Expresie.",
+    "createdAt": "2026-09-23T16:45:32.546Z"
+  }
+]
