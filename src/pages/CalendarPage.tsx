@@ -86,46 +86,6 @@ function getRelativeDateLabel(dateStr: string): { label: string; isUrgent: boole
   return null;
 }
 
-// Generate downloadable RFC-5545 iCalendar file
-function downloadEventIcs(ev: CalendarEvent) {
-  const formatIcsDate = (dStr: string) => {
-    const d = new Date(dStr);
-    return isNaN(d.getTime()) ? '' : d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-  };
-
-  const start = formatIcsDate(ev.start);
-  const end = formatIcsDate(ev.end || ev.start);
-
-  const icsContent = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//Patrula Cormoran//RO',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-    'BEGIN:VEVENT',
-    `UID:${ev.id || Date.now()}@patrulacormoran.ro`,
-    `DTSTAMP:${formatIcsDate(new Date().toISOString())}`,
-    `DTSTART:${start}`,
-    `DTEND:${end}`,
-    `SUMMARY:${ev.title || 'Eveniment Patrulă'}`,
-    ev.description ? `DESCRIPTION:${ev.description.replace(/\n/g, '\\n')}` : '',
-    ev.location ? `LOCATION:${ev.location}` : '',
-    'STATUS:CONFIRMED',
-    'END:VEVENT',
-    'END:VCALENDAR',
-  ].filter(Boolean).join('\r\n');
-
-  const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${(ev.title || 'eveniment').replace(/[^a-zA-Z0-9]/g, '_')}.ics`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
 // Directly open the mobile device's native Calendar app (Google Calendar or default phone calendar)
 function handleAddToDeviceCalendar(ev: CalendarEvent) {
   const ua = navigator.userAgent || '';
@@ -138,30 +98,31 @@ function handleAddToDeviceCalendar(ev: CalendarEvent) {
   const endDate = ev.end ? new Date(ev.end) : new Date(startMs + 60 * 60 * 1000);
   const endMs = isNaN(endDate.getTime()) ? startMs + 60 * 60 * 1000 : endDate.getTime();
 
+  const title = encodeURIComponent(ev.title || 'Eveniment Patrulă');
+  const details = encodeURIComponent(ev.description || '');
+  const location = encodeURIComponent(ev.location || '');
+
+  const formatGCalDate = (d: Date) => {
+    return d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  };
+  const dates = `${formatGCalDate(startDate)}/${formatGCalDate(endDate)}`;
+
   if (isAndroid) {
-    // Direct Android intent to Google Calendar / default phone Calendar application
-    const intentUrl = `intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.item/event;S.title=${encodeURIComponent(
-      ev.title
-    )};S.eventLocation=${encodeURIComponent(ev.location || '')};S.description=${encodeURIComponent(
-      ev.description || ''
-    )};l.beginTime=${startMs};l.endTime=${endMs};end`;
-
-    const timer = setTimeout(() => {
-      downloadEventIcs(ev);
-    }, 1200);
-
+    // Official Android Calendar Intent - opens Google Calendar / default phone Calendar app directly with prefilled details!
+    const intentUrl = `intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.item/event;S.title=${title};S.description=${details};S.eventLocation=${location};l.beginTime=${startMs};l.endTime=${endMs};end`;
     window.location.href = intentUrl;
     return;
   }
 
   if (isIOS) {
-    // On iPhone/iPad, opening the .ics stream prompts native iOS Calendar event sheet directly
+    // On iPhone/iPad, opening the .ics stream prompts native iOS Calendar event sheet directly without downloading a file
     window.location.href = `/api/calendar/event/${encodeURIComponent(ev.id)}/ics`;
     return;
   }
 
-  // Universal / Desktop fallback (downloads .ics file to open directly in Calendar app)
-  downloadEventIcs(ev);
+  // Desktop or other devices: Google Calendar Web template with prefilled details ready to save with one click (no file downloaded!)
+  const webUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${dates}&details=${details}&location=${location}`;
+  window.open(webUrl, '_blank', 'noopener,noreferrer');
 }
 
 export const CalendarPage: React.FC = () => {
@@ -187,7 +148,7 @@ export const CalendarPage: React.FC = () => {
 
     try {
       if (interactive) setLoading(true);
-      const res = await fetchCalendarEventsWithAutoSync(interactive);
+      const res = await fetchCalendarEventsWithAutoSync();
       if (res.events && res.events.length > 0) {
         setEvents(res.events);
         checkAndDispatchEventNotifications(res.events);
@@ -235,12 +196,12 @@ export const CalendarPage: React.FC = () => {
     refreshEvents(false);
   }, [refreshEvents]);
 
-  // AUTO-REFRESH EXACTLY EVERY 1 MINUTE (60000ms)
+  // AUTO-REFRESH EVERY 10 SECONDS (10000ms) for real-time live sync with Google Calendar
   useEffect(() => {
     if (!isOnline) return;
     const interval = setInterval(() => {
       refreshEvents(false);
-    }, 60000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [isOnline, refreshEvents]);
 

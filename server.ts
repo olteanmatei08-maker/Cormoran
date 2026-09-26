@@ -122,16 +122,151 @@ function parseICal(ics: string) {
   return events;
 }
 
+let lastCalendarFetchTime = 0;
+let cachedCalendarEvents: any[] = [];
+
+async function fetchLiveGoogleCalendarEvents(calendarId: string): Promise<any[]> {
+  const now = Date.now();
+  // 10-second throttle for super-fast live updates from Google Calendar
+  if (cachedCalendarEvents.length > 0 && now - lastCalendarFetchTime < 10000) {
+    return cachedCalendarEvents;
+  }
+
+  const agendaUrl = `https://calendar.google.com/calendar/htmlembed?src=${encodeURIComponent(
+    calendarId
+  )}&mode=AGENDA&_t=${now}`;
+
+  try {
+    const res = await fetch(agendaUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Google Calendar agenda HTTP ${res.status}`);
+    }
+
+    const html = await res.text();
+    const eventLinkRegex = /href="event\?eid=([^"&]+)[^"]*"/g;
+    const eids: string[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = eventLinkRegex.exec(html)) !== null) {
+      if (!eids.includes(match[1])) {
+        eids.push(match[1]);
+      }
+    }
+
+    if (eids.length > 0) {
+      const fetchedEvents: any[] = [];
+      for (const eid of eids) {
+        const eventUrl = `https://calendar.google.com/calendar/event?eid=${eid}`;
+        try {
+          const evRes = await fetch(eventUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept-Language': 'ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7',
+            },
+            signal: AbortSignal.timeout(3000),
+          });
+
+          if (evRes.ok) {
+            const evHtml = await evRes.text();
+            const idMatch = evHtml.match(/content="([a-zA-Z0-9_-]{10,})"/);
+            const nameMatch = evHtml.match(/itemprop="name"[^>]*>([^<]+)<\/span>/);
+            const startMatch = evHtml.match(/itemprop="startDate"\s+datetime="([^"]+)"/);
+            const endMatch = evHtml.match(/itemprop="endDate"\s+datetime="([^"]+)"/);
+            const locMatch = evHtml.match(
+              /itemprop="location"[^>]*>[\s\S]*?<span itemprop="name"[^>]*>([^<]+)<\/span>/
+            );
+            const descMatch = evHtml.match(/itemprop="description"[^>]*>([\s\S]*?)<\/span>/);
+
+            let id = idMatch ? idMatch[1] : null;
+            if (!id) {
+              try {
+                id = Buffer.from(eid.split(' ')[0], 'base64').toString('utf-8').split(' ')[0];
+              } catch {
+                id = eid;
+              }
+            }
+
+            const title = nameMatch ? nameMatch[1].trim() : 'Eveniment';
+            const location = locMatch ? locMatch[1].trim() : undefined;
+            const description = descMatch ? descMatch[1].trim() : undefined;
+
+            const parseGCalTime = (s: string | null) => {
+              if (!s) return '';
+              if (s.includes('T')) {
+                const y = s.slice(0, 4);
+                const m = s.slice(4, 6);
+                const d = s.slice(6, 8);
+                const h = s.slice(9, 11);
+                const min = s.slice(11, 13);
+                const sec = s.slice(13, 15);
+                return new Date(Date.UTC(+y, +m - 1, +d, +h, +min, +sec)).toISOString();
+              } else {
+                const y = s.slice(0, 4);
+                const m = s.slice(4, 6);
+                const d = s.slice(6, 8);
+                return `${y}-${m}-${d}`;
+              }
+            };
+
+            const start = parseGCalTime(startMatch ? startMatch[1] : null);
+            const end = parseGCalTime(endMatch ? endMatch[1] : null);
+
+            fetchedEvents.push({
+              id,
+              title,
+              location,
+              description,
+              start,
+              end: end || start,
+              hasTime: start.includes('T'),
+              category: 'adunare',
+              htmlLink: `https://www.google.com/calendar/event?eid=${eid}`,
+            });
+          }
+        } catch {
+          // Continue to next event
+        }
+      }
+
+      if (fetchedEvents.length > 0) {
+        cachedCalendarEvents = fetchedEvents;
+        lastCalendarFetchTime = now;
+        writeJsonFile(EVENTS_FILE, fetchedEvents);
+        return fetchedEvents;
+      }
+    }
+  } catch (err: any) {
+    console.warn('Live calendar sync error:', err?.message);
+  }
+
+  const stored = readJsonFile<any[]>(EVENTS_FILE, []);
+  if (stored.length > 0) {
+    cachedCalendarEvents = stored;
+    return stored;
+  }
+  return cachedCalendarEvents;
+}
+
 // 1. GET CALENDAR EVENTS:
-// Returns permanently persisted real events for any phone/device!
-app.get('/api/calendar/events', async (req, res) => {
+// Returns permanently persisted real events for any phone/device with 10s auto-sync!
+app.get('/api/calendar/events', async (_req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   try {
-    const storedEvents = readJsonFile<any[]>(EVENTS_FILE, []);
-    return res.json({ events: storedEvents, source: 'persisted', timestamp: Date.now() });
+    const calendarId = process.env.GOOGLE_CALENDAR_ID || 'olteanmatei08@gmail.com';
+    const events = await fetchLiveGoogleCalendarEvents(calendarId);
+    return res.json({ events, source: 'live', timestamp: Date.now() });
   } catch (err: any) {
     console.error('Calendar server endpoint error:', err);
-    return res.status(500).json({ error: err?.message || 'Eroare calendar' });
+    const stored = readJsonFile<any[]>(EVENTS_FILE, []);
+    return res.json({ events: stored, source: 'persisted', error: err?.message });
   }
 });
 
