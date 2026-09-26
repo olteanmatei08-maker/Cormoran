@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cormo - Patrula Cormoran</title>
     <link rel="icon" type="image/png" href="/cormoran_emblem.png" />
+    <link rel="apple-touch-icon" href="/cormoran_emblem.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#07090d" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="description" content="Aplicație pentru Patrula Cormoran: testament, istoric, pedagogie și calendar." />
     <meta property="og:title" content="Cormo - Patrula Cormoran" />
     <meta property="og:description" content="Aplicație pentru Patrula Cormoran: testament, istoric, pedagogie și calendar." />
@@ -15,8 +20,12 @@
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700;800;900&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,600&display=swap" rel="stylesheet">
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
-  <body>
-    <div id="root"></div>
+  <body style="margin: 0; background-color: #07090d; color: #f8fafc;">
+    <div id="root">
+      <div style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #07090d;">
+        <img src="/cormoran_emblem.png" alt="Patrula Cormoran" style="width: 88px; height: 88px; object-fit: contain; opacity: 0.9;" />
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

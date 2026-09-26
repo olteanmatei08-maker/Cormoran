@@ -125,33 +125,10 @@ function parseICal(ics: string) {
 // 1. GET CALENDAR EVENTS:
 // Returns permanently persisted real events for any phone/device!
 app.get('/api/calendar/events', async (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   try {
-    // First, check persisted events from file
     const storedEvents = readJsonFile<any[]>(EVENTS_FILE, []);
-    if (storedEvents.length > 0) {
-      return res.json({ events: storedEvents, source: 'persisted' });
-    }
-
-    // If not yet persisted, attempt iCal feed if configured
-    const calendarId = (req.query.calendarId as string) || process.env.GOOGLE_CALENDAR_ID || 'olteanmatei08@gmail.com';
-    const icalUrl = (req.query.icalUrl as string) || process.env.GOOGLE_CALENDAR_ICAL_URL || `https://calendar.google.com/calendar/ical/${encodeURIComponent(calendarId)}/public/basic.ics`;
-    
-    try {
-      const icalRes = await fetch(icalUrl, { signal: AbortSignal.timeout(3500) });
-      if (icalRes.ok) {
-        const icsText = await icalRes.text();
-        const parsed = parseICal(icsText);
-        if (parsed.length > 0) {
-          writeJsonFile(EVENTS_FILE, parsed);
-          return res.json({ events: parsed, source: 'ical' });
-        }
-      }
-    } catch {
-      // Ignore network timeout
-    }
-
-    // Return empty list (NO DEMO EVENTS!)
-    return res.json({ events: [], source: 'none' });
+    return res.json({ events: storedEvents, source: 'persisted', timestamp: Date.now() });
   } catch (err: any) {
     console.error('Calendar server endpoint error:', err);
     return res.status(500).json({ error: err?.message || 'Eroare calendar' });
@@ -182,7 +159,141 @@ app.post('/api/calendar/sync', (req, res) => {
   }
 });
 
-// 3. GET DRIVE RESOURCES:
+// Helper to fetch Google Drive folder files
+async function fetchDriveFolderFiles(folderId: string, apiKey: string) {
+  // 1. First try Google Drive API v3
+  try {
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+    const apiUrl = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,webViewLink,webContentLink,size,modifiedTime)&key=${apiKey}`;
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.files)) {
+        return data.files.map((f: any) => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType || 'application/octet-stream',
+          webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
+          directViewLink: `https://drive.google.com/file/d/${f.id}/preview`,
+          downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
+          size: f.size ? formatBytes(Number(f.size)) : undefined,
+          modifiedTime: f.modifiedTime,
+        }));
+      }
+    }
+  } catch (err: any) {
+    console.warn('Drive API direct request failed:', err?.message);
+  }
+
+  // 2. Fetch public HTML view of folder
+  try {
+    const folderUrl = `https://drive.google.com/drive/folders/${folderId}`;
+    const res = await fetch(folderUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const callbacks = html.match(/AF_initDataCallback\(\{.*?\}\);/gs) || [];
+      const files: any[] = [];
+
+      for (const cb of callbacks) {
+        const jsonMatch = cb.match(/data:\s*(\[.*?\])\s*,\s*sideChannel:/s);
+        if (!jsonMatch) continue;
+        try {
+          const parsed = JSON.parse(jsonMatch[1]);
+          function searchNodes(node: any) {
+            if (!node || !Array.isArray(node)) return;
+            let fileId: string | null = null;
+            let fileName: string | null = null;
+            let mimeType: string | null = null;
+            let size: string | null = null;
+
+            function extractFromItem(n: any) {
+              if (!n || !Array.isArray(n)) return;
+              if (n[1] === 'Download' && Array.isArray(n[5]) && n[5][0] && typeof n[5][0][1] === 'string') {
+                fileId = n[5][0][1];
+              }
+              if (Array.isArray(n) && typeof n[0] === 'string' && n[0].includes('application/')) {
+                mimeType = n[0];
+              }
+              if (n[0] === 16 && Array.isArray(n[2])) {
+                const possibleName = n[2]?.[1]?.[0]?.[0]?.[0];
+                if (typeof possibleName === 'string' && possibleName.length > 0) {
+                  fileName = possibleName;
+                }
+              }
+              if (n[0] === 1 && Array.isArray(n[2])) {
+                const possibleSize = n[2]?.[1]?.[0]?.[0]?.[0];
+                if (typeof possibleSize === 'string') size = possibleSize;
+              }
+              n.forEach(extractFromItem);
+            }
+
+            extractFromItem(node);
+            if (fileId && fileName && !files.some((f) => f.id === fileId)) {
+              files.push({
+                id: fileId,
+                name: fileName,
+                mimeType: mimeType || 'application/pdf',
+                size: size || undefined,
+                webViewLink: `https://drive.google.com/file/d/${fileId}/view`,
+                directViewLink: `https://drive.google.com/file/d/${fileId}/preview`,
+                downloadUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
+              });
+            }
+            node.forEach(searchNodes);
+          }
+          searchNodes(parsed);
+        } catch {
+          // Ignore parse errors on individual callbacks
+        }
+      }
+
+      if (files.length > 0) {
+        return files;
+      }
+    }
+  } catch (err: any) {
+    console.warn('Folder HTML scraping error:', err?.message);
+  }
+
+  return [];
+}
+
+function formatBytes(bytes: number) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// 3. GET DRIVE RESOURCES (LIVE FOLDER SYNC):
+// Interoghează live dosarul Google Drive 1qwQBgPB3vuCzWi6aor2t8OMZHEExzuXJ
+app.get('/api/drive/files', async (_req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  const folderId = '1qwQBgPB3vuCzWi6aor2t8OMZHEExzuXJ';
+  const apiKey = process.env.GOOGLE_API_KEY || 'AIzaSyAAYnHYz7FZ1INDbjGNdt_Ttt7c4fMEnkw';
+
+  try {
+    const liveFiles = await fetchDriveFolderFiles(folderId, apiKey);
+    if (liveFiles.length > 0) {
+      writeJsonFile(RESOURCES_FILE, liveFiles);
+      return res.json({ files: liveFiles, source: 'live', timestamp: Date.now() });
+    }
+
+    // Fallback to persisted file if live fetch had temporary network timeout
+    const stored = readJsonFile<any[]>(RESOURCES_FILE, []);
+    return res.json({ files: stored, source: 'persisted', timestamp: Date.now() });
+  } catch (err: any) {
+    console.error('Eroare /api/drive/files:', err);
+    const stored = readJsonFile<any[]>(RESOURCES_FILE, []);
+    return res.json({ files: stored, source: 'persisted', error: err?.message });
+  }
+});
+
+// 4. GET DRIVE RESOURCES:
 // Returns permanently persisted real Google Drive files for all devices!
 app.get('/api/resources', (_req, res) => {
   try {

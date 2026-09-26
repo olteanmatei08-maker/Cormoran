@@ -1,0 +1,17 @@
+{
+  "name": "Cormo - Patrula Cormoran",
+  "short_name": "Cormo",
+  "description": "Aplicație pentru Patrula Cormoran: testament, istoric, pedagogie, calendar și resurse.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07090d",
+  "theme_color": "#07090d",
+  "icons": [
+    {
+      "src": "/cormoran_emblem.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

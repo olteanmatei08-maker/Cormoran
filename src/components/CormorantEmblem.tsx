@@ -1,5 +1,5 @@
 import React from 'react';
-import emblemBlue from '../assets/emblem_blue.png';
+import emblemGray from '../assets/emblem_gray.png';
 
 interface CormorantEmblemProps {
   className?: string;
@@ -25,7 +25,7 @@ export const CormorantEmblem: React.FC<CormorantEmblemProps> = ({
       className={`relative inline-flex items-center justify-center shrink-0 bg-transparent select-none transition-transform duration-300 hover:scale-[1.02] ${sizeMap[size]} ${className}`}
     >
       <img
-        src={emblemBlue}
+        src={emblemGray}
         alt="Emblema Oficială Patrula Cormoran"
         className="w-full h-full object-contain filter drop-shadow-md"
         referrerPolicy="no-referrer"
