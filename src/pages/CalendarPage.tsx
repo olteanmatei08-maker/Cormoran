@@ -2,11 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { CalendarEvent } from '../types';
 import {
   getCachedCalendarEvents,
-  fetchPublicCalendarEvents,
-  getPublicCalendarConfig,
-  savePublicCalendarConfig,
-  saveCachedCalendarEvents,
+  fetchServerCalendarEvents,
 } from '../services/googleCalendar';
+import {
+  syncGoogleAccountData,
+  USER_EMAIL_HINT,
+} from '../services/googleSyncService';
 import {
   Calendar as CalendarIcon,
   RefreshCw,
@@ -18,9 +19,8 @@ import {
   CalendarDays,
   CloudSun,
   WifiOff,
-  Settings,
-  X,
-  Check,
+  CloudLightning,
+  CheckCircle2,
 } from 'lucide-react';
 import { WeatherCluj } from '../components/WeatherCluj';
 import { checkAndDispatchEventNotifications } from '../services/notificationService';
@@ -90,9 +90,13 @@ function getRelativeDateLabel(dateStr: string): string | null {
 }
 
 export const CalendarPage: React.FC = () => {
-  // 1. Instantaneous render directly from localStorage
+  // Real events only (loaded instantly from cache, no demo events)
   const [events, setEvents] = useState<CalendarEvent[]>(getCachedCalendarEvents);
   const [loading, setLoading] = useState(false);
+  const [syncingGoogle, setSyncingGoogle] = useState(false);
+  const [syncSuccessMsg, setSyncSuccessMsg] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
   const [isOnline, setIsOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -105,27 +109,52 @@ export const CalendarPage: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDate());
 
-  // Settings modal for calendar source
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [config, setConfig] = useState(getPublicCalendarConfig());
-  const [savedSuccess, setSavedSuccess] = useState(false);
-
-  // Background fetch function (never blocks UI or prompts for login)
+  // Background fetch function (loads real events stored permanently on server)
   const refreshEvents = useCallback(async (silent: boolean = false) => {
     if (!navigator.onLine) return;
 
     try {
       if (!silent) setLoading(true);
-      const res = await fetchPublicCalendarEvents();
-      if (res.events && res.events.length > 0) {
+      const res = await fetchServerCalendarEvents();
+      if (res.events) {
         setEvents(res.events);
         checkAndDispatchEventNotifications(res.events);
       }
     } catch (err) {
-      console.warn('Background calendar sync error:', err);
+      console.warn('Eroare actualizare evenimente:', err);
     } finally {
       if (!silent) setLoading(false);
     }
+  }, []);
+
+  // Sync directly with user's Google Account (olteanmatei08@gmail.com)
+  const handleGoogleSync = async () => {
+    setSyncingGoogle(true);
+    setSyncError(null);
+    setSyncSuccessMsg(null);
+
+    try {
+      const result = await syncGoogleAccountData();
+      setSyncSuccessMsg(`Sincronizat cu succes! S-au importat ${result.eventsCount} evenimente și ${result.resourcesCount} documente.`);
+      refreshEvents(false);
+      setTimeout(() => setSyncSuccessMsg(null), 4000);
+    } catch (err: any) {
+      setSyncError(err?.message || 'Eroare la sincronizarea cu Google.');
+      setTimeout(() => setSyncError(null), 5000);
+    } finally {
+      setSyncingGoogle(false);
+    }
+  };
+
+  // Listen for sync event from other parts of the app
+  useEffect(() => {
+    const handleEventsUpdated = (e: any) => {
+      if (Array.isArray(e.detail)) {
+        setEvents(e.detail);
+      }
+    };
+    window.addEventListener('cormo_events_updated', handleEventsUpdated);
+    return () => window.removeEventListener('cormo_events_updated', handleEventsUpdated);
   }, []);
 
   // Online / Offline listener
@@ -152,41 +181,6 @@ export const CalendarPage: React.FC = () => {
   useEffect(() => {
     refreshEvents(true);
   }, [refreshEvents]);
-
-  // Auto-refresh in background every 60 seconds when tab is active
-  useEffect(() => {
-    if (!isOnline) return;
-
-    const interval = setInterval(() => {
-      refreshEvents(true);
-    }, 60000);
-
-    return () => clearInterval(interval);
-  }, [isOnline, refreshEvents]);
-
-  // Auto-refresh when tab gains focus
-  useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && isOnline) {
-        refreshEvents(true);
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    window.addEventListener('focus', handleVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('focus', handleVisibility);
-    };
-  }, [isOnline, refreshEvents]);
-
-  const handleSaveSettings = (e: React.FormEvent) => {
-    e.preventDefault();
-    savePublicCalendarConfig(config);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2000);
-    refreshEvents(false);
-    setIsSettingsOpen(false);
-  };
 
   // Filter events into upcoming
   const now = new Date();
@@ -274,40 +268,41 @@ export const CalendarPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Manual Refresh Button */}
+            {/* Google Sync Button */}
             <button
-              onClick={() => refreshEvents(false)}
-              disabled={loading || !isOnline}
-              className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer text-xs flex items-center gap-1.5 active:scale-95 shadow-sm disabled:opacity-50"
-              title={isOnline ? 'Actualizează evenimentele' : 'Ești offline (evenimentele sunt salvate)'}
-              aria-label="Actualizează evenimentele"
+              onClick={handleGoogleSync}
+              disabled={syncingGoogle || !isOnline}
+              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-all cursor-pointer text-xs font-bold flex items-center gap-1.5 active:scale-95 shadow-md disabled:opacity-50"
+              title="Sincronizează datele din Google Calendar"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
-              <span className="hidden sm:inline">{loading ? 'Se actualizează...' : 'Actualizează'}</span>
-            </button>
-
-            {/* Quick config modal trigger */}
-            <button
-              onClick={() => {
-                setConfig(getPublicCalendarConfig());
-                setIsSettingsOpen(true);
-              }}
-              className="p-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Configurare ID Calendar Public"
-              aria-label="Configurare Calendar"
-            >
-              <Settings className="w-3.5 h-3.5" />
+              <RefreshCw className={`w-3.5 h-3.5 ${syncingGoogle ? 'animate-spin' : ''}`} />
+              <span>{syncingGoogle ? 'Se importă...' : 'Sincronizează Google'}</span>
             </button>
           </div>
         )}
       </section>
+
+      {/* Sync feedback alerts */}
+      {syncSuccessMsg && (
+        <div className="p-3 bg-emerald-950/80 border border-emerald-600 rounded-xl text-emerald-200 text-xs flex items-center gap-2 shadow-lg">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{syncSuccessMsg}</span>
+        </div>
+      )}
+
+      {syncError && (
+        <div className="p-3 bg-red-950/80 border border-red-800 rounded-xl text-red-200 text-xs flex items-center gap-2">
+          <CloudLightning className="w-4 h-4 text-red-400 shrink-0" />
+          <span>{syncError}</span>
+        </div>
+      )}
 
       {/* Offline Status Badge */}
       {!isOnline && activeSubTab === 'calendar' && (
         <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-amber-200 text-xs flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>Mod offline: Evenimentele sunt salvate pe dispozitiv. Se vor actualiza automat când revii online.</span>
+            <span>Mod offline: Evenimentele sunt salvate pe dispozitiv.</span>
           </div>
           <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-900/60 text-amber-300 shrink-0">
             Offline
@@ -321,109 +316,123 @@ export const CalendarPage: React.FC = () => {
       {/* CALENDAR PAGE VIEW */}
       {activeSubTab === 'calendar' && (
         <>
-          {/* UPCOMING EVENTS VIEW - ALWAYS VISIBLE EVEN OFFLINE */}
+          {/* UPCOMING EVENTS VIEW - NO DEMO EVENTS */}
           {viewMode === 'upcoming' && (
             <section className="space-y-3">
               <div className="flex items-center justify-between text-xs text-slate-400 px-1 pb-1">
                 <span className="font-semibold uppercase tracking-wider text-slate-400">
                   Evenimente care urmează ({upcomingEvents.length})
                 </span>
-                <span className="text-[11px] text-emerald-400 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>Sincronizat permanent</span>
+                <span className="text-[11px] text-blue-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span>Cont: {USER_EMAIL_HINT}</span>
                 </span>
               </div>
 
-              <div className="space-y-3">
-                {upcomingEvents.map((ev) => {
-                  const startDate = parseDateSafe(ev.start);
-                  const relativeBadge = getRelativeDateLabel(ev.start);
-                  const timeDisplay = getEventTimeDisplay(ev);
-                  const hasLocation = !!(ev.location && ev.location.trim().length > 0);
+              {upcomingEvents.length > 0 ? (
+                <div className="space-y-3">
+                  {upcomingEvents.map((ev) => {
+                    const startDate = parseDateSafe(ev.start);
+                    const relativeBadge = getRelativeDateLabel(ev.start);
+                    const timeDisplay = getEventTimeDisplay(ev);
+                    const hasLocation = !!(ev.location && ev.location.trim().length > 0);
 
-                  const dateDisplay = isNaN(startDate.getTime())
-                    ? ev.start
-                    : startDate.toLocaleDateString('ro-RO', {
-                        weekday: 'long',
-                        day: 'numeric',
-                        month: 'long',
-                      });
+                    const dateDisplay = isNaN(startDate.getTime())
+                      ? ev.start
+                      : startDate.toLocaleDateString('ro-RO', {
+                          weekday: 'long',
+                          day: 'numeric',
+                          month: 'long',
+                        });
 
-                  return (
-                    <div
-                      key={ev.id}
-                      className="p-5 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-3 hover:border-slate-700 transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-                              {dateDisplay}
-                            </span>
-                            {relativeBadge && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">
-                                {relativeBadge}
+                    return (
+                      <div
+                        key={ev.id}
+                        className="p-5 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-3 hover:border-slate-700 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
+                                {dateDisplay}
                               </span>
-                            )}
+                              {relativeBadge && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">
+                                  {relativeBadge}
+                                </span>
+                              )}
+                            </div>
+                            <h3 className="text-base sm:text-lg font-bold text-white">
+                              {ev.title}
+                            </h3>
                           </div>
-                          <h3 className="text-base sm:text-lg font-bold text-white">
-                            {ev.title}
-                          </h3>
+
+                          {ev.htmlLink && (
+                            <a
+                              href={ev.htmlLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-slate-500 hover:text-white p-1"
+                              title="Deschide în Google Calendar"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
+                          )}
                         </div>
 
-                        {ev.htmlLink && (
-                          <a
-                            href={ev.htmlLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-slate-500 hover:text-white p-1"
-                            title="Deschide în Google Calendar"
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </a>
+                        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+                          {timeDisplay && (
+                            <div className="flex items-center gap-1.5 text-slate-200">
+                              <Clock className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                              <span className="font-semibold text-white bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                {timeDisplay}
+                              </span>
+                            </div>
+                          )}
+                          {hasLocation && (
+                            <div className="flex items-center gap-1.5 text-slate-400">
+                              <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                              <span className="truncate max-w-[260px] sm:max-w-md">{ev.location!.trim()}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {ev.description && (
+                          <p className="text-xs text-slate-400 pt-2 leading-relaxed border-t border-slate-800/80">
+                            {ev.description}
+                          </p>
                         )}
                       </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-8 sm:p-12 text-center bg-[#0c1017] rounded-2xl border border-slate-800 space-y-4">
+                  <CalendarDays className="w-12 h-12 text-slate-600 mx-auto" />
+                  <div className="space-y-1">
+                    <p className="text-white font-bold text-base sm:text-lg">
+                      Niciun eveniment importat încă din Google Calendar
+                    </p>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                      Evenimentele reale din contul tău Google ({USER_EMAIL_HINT}) nu au fost încă sincronizate.
+                      Apasă butonul de mai jos pentru a le importa o singură dată; acestea vor rămâne salvate automat pe orice telefon și dispozitiv.
+                    </p>
+                  </div>
 
-                      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
-                        {timeDisplay && (
-                          <div className="flex items-center gap-1.5 text-slate-200">
-                            <Clock className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                            <span className="font-semibold text-white bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                              {timeDisplay}
-                            </span>
-                          </div>
-                        )}
-                        {hasLocation && (
-                          <div className="flex items-center gap-1.5 text-slate-400">
-                            <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                            <span className="truncate max-w-[260px] sm:max-w-md">{ev.location!.trim()}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {ev.description && (
-                        <p className="text-xs text-slate-400 pt-2 leading-relaxed border-t border-slate-800/80">
-                          {ev.description}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {upcomingEvents.length === 0 && !loading && (
-                <div className="p-10 text-center bg-[#0c1017] rounded-2xl border border-slate-800 text-slate-400 text-sm space-y-1.5">
-                  <CalendarDays className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                  <p className="text-slate-200 font-semibold">Nu sunt evenimente viitoare programate.</p>
-                  <p className="text-xs text-slate-500">
-                    Orice eveniment adăugat în calendarul de patrulă va apărea automat aici pe toate dispozitivele.
-                  </p>
+                  <button
+                    onClick={handleGoogleSync}
+                    disabled={syncingGoogle || !isOnline}
+                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-lg inline-flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${syncingGoogle ? 'animate-spin' : ''}`} />
+                    <span>{syncingGoogle ? 'Se importă evenimentele...' : 'Importă din Google Calendar'}</span>
+                  </button>
                 </div>
               )}
             </section>
           )}
 
-          {/* MOBILE-OPTIMIZED MONTH VIEW - ALWAYS VISIBLE EVEN OFFLINE */}
+          {/* MOBILE-OPTIMIZED MONTH VIEW */}
           {viewMode === 'month' && (
             <section className="space-y-4">
               <div className="p-4 sm:p-6 rounded-2xl bg-[#0c1017] border border-slate-800 shadow-xl space-y-4">
@@ -607,89 +616,6 @@ export const CalendarPage: React.FC = () => {
             </section>
           )}
         </>
-      )}
-
-      {/* Calendar Source Configuration Modal (Read-Only Public Setup) */}
-      {isSettingsOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0c1017] border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <CalendarIcon className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-base font-bold text-white">Configurare Calendar Public</h3>
-              </div>
-              <button
-                onClick={() => setIsSettingsOpen(false)}
-                className="text-slate-400 hover:text-white p-1"
-                aria-label="Închide"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Calendarul se descarcă automat pe orice dispozitiv sau telefon fără a cere logare. Poți schimba ID-ul calendarului public sau cheia API dacă este nevoie.
-            </p>
-
-            <form onSubmit={handleSaveSettings} className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  ID Calendar Google (Public):
-                </label>
-                <input
-                  type="text"
-                  value={config.calendarId}
-                  onChange={(e) => setConfig({ ...config, calendarId: e.target.value })}
-                  placeholder="ex: olteanmatei08@gmail.com"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Cheie API Google Calendar (Opțional):
-                </label>
-                <input
-                  type="password"
-                  value={config.apiKey}
-                  onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
-                  placeholder="AIzaSy..."
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  URL Feed iCal / .ics (Opțional):
-                </label>
-                <input
-                  type="url"
-                  value={config.icalUrl}
-                  onChange={(e) => setConfig({ ...config, icalUrl: e.target.value })}
-                  placeholder="https://calendar.google.com/calendar/ical/.../public/basic.ics"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-900 text-xs text-slate-400 hover:text-white border border-slate-800"
-                >
-                  Anulează
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-xs font-bold text-white shadow-md flex items-center gap-1.5"
-                >
-                  {savedSuccess ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : null}
-                  <span>Salvează</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
       )}
     </div>
   );

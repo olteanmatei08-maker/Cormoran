@@ -617,14 +617,14 @@ export async function sendTestNotification(): Promise<boolean> {
 // Send test notification simulating when date & location were established
 export async function sendTestDetailNotification(type: 'both' | 'location' | 'date' = 'both'): Promise<boolean> {
   let title = 'Patrula Cormoran • Detalii Stabilite';
-  let body = 'La evenimentul „Ieșire în Vlădeasa” s-a stabilit data (Sâmbătă, 11 Octombrie la 08:30) și locul (Gara Cluj-Napoca)!';
+  let body = 'La un eveniment de patrulă s-a stabilit data și locul!';
 
   if (type === 'location') {
     title = 'Patrula Cormoran • Locație Stabilită';
-    body = 'La evenimentul „Adunare de Patrulă” s-a stabilit locul: Parcul Central (lângă foișor).';
+    body = 'La un eveniment din calendar s-a stabilit locația de întâlnire.';
   } else if (type === 'date') {
     title = 'Patrula Cormoran • Dată & Oră Stabilită';
-    body = 'La evenimentul „Atelier de Noduri și Pionierat” s-a stabilit data: Sâmbătă, 18 Octombrie la ora 10:00.';
+    body = 'La un eveniment din calendar s-a stabilit data și ora de desfășurare.';
   }
 
   return await sendNativeNotification(title, {

@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -10,7 +11,40 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+// Data storage paths
+const DATA_DIR = path.resolve(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const EVENTS_FILE = path.join(DATA_DIR, 'calendar_events.json');
+const RESOURCES_FILE = path.join(DATA_DIR, 'drive_resources.json');
+
+// Helper to safely read JSON file
+function readJsonFile<T>(filePath: string, fallback: T): T {
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.warn(`Error reading ${filePath}:`, err);
+  }
+  return fallback;
+}
+
+// Helper to safely write JSON file
+function writeJsonFile<T>(filePath: string, data: T): boolean {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error(`Error writing ${filePath}:`, err);
+    return false;
+  }
+}
 
 // Helper function to categorize events
 function categorizeEvent(summary = '', description = '') {
@@ -88,59 +122,100 @@ function parseICal(ics: string) {
   return events;
 }
 
-// Read-only public Google Calendar endpoint (permanent, no OAuth needed)
+// 1. GET CALENDAR EVENTS:
+// Returns permanently persisted real events for any phone/device!
 app.get('/api/calendar/events', async (req, res) => {
   try {
-    const calendarId = (req.query.calendarId as string) || process.env.GOOGLE_CALENDAR_ID || 'olteanmatei08@gmail.com';
-    const apiKey = (req.query.apiKey as string) || process.env.GOOGLE_CALENDAR_API_KEY || '';
-    const icalUrl = (req.query.icalUrl as string) || process.env.GOOGLE_CALENDAR_ICAL_URL || '';
-    const timeMin = (req.query.timeMin as string) || new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-
-    // 1. If Google API Key provided, query Google Calendar API v3 directly
-    if (apiKey) {
-      try {
-        const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?key=${apiKey}&singleEvents=true&orderBy=startTime&timeMin=${encodeURIComponent(timeMin)}&maxResults=100`;
-        const response = await fetch(url, { signal: AbortSignal.timeout(3500) });
-        if (response.ok) {
-          const data = await response.json();
-          const items = (data.items || []).map((item: any) => ({
-            id: item.id,
-            title: item.summary || 'Eveniment fără nume',
-            description: item.description,
-            location: item.location,
-            start: item.start?.dateTime || item.start?.date || '',
-            end: item.end?.dateTime || item.end?.date || '',
-            hasTime: !!item.start?.dateTime,
-            category: categorizeEvent(item.summary, item.description),
-            htmlLink: item.htmlLink,
-          }));
-          return res.json({ events: items, source: 'google_api' });
-        }
-      } catch (apiErr) {
-        console.warn('Google Calendar API fetch error:', apiErr);
-      }
+    // First, check persisted events from file
+    const storedEvents = readJsonFile<any[]>(EVENTS_FILE, []);
+    if (storedEvents.length > 0) {
+      return res.json({ events: storedEvents, source: 'persisted' });
     }
 
-    // 2. If iCal URL is provided or public Google Calendar iCal feed
-    const candidateIcalUrl = icalUrl || `https://calendar.google.com/calendar/ical/${encodeURIComponent(calendarId)}/public/basic.ics`;
+    // If not yet persisted, attempt iCal feed if configured
+    const calendarId = (req.query.calendarId as string) || process.env.GOOGLE_CALENDAR_ID || 'olteanmatei08@gmail.com';
+    const icalUrl = (req.query.icalUrl as string) || process.env.GOOGLE_CALENDAR_ICAL_URL || `https://calendar.google.com/calendar/ical/${encodeURIComponent(calendarId)}/public/basic.ics`;
+    
     try {
-      const icalRes = await fetch(candidateIcalUrl, { signal: AbortSignal.timeout(3500) });
+      const icalRes = await fetch(icalUrl, { signal: AbortSignal.timeout(3500) });
       if (icalRes.ok) {
         const icsText = await icalRes.text();
         const parsed = parseICal(icsText);
         if (parsed.length > 0) {
+          writeJsonFile(EVENTS_FILE, parsed);
           return res.json({ events: parsed, source: 'ical' });
         }
       }
-    } catch (icalErr) {
-      console.warn('iCal fetch error:', icalErr);
+    } catch {
+      // Ignore network timeout
     }
 
-    // 3. Fallback: Return empty array so client uses local offline cache
+    // Return empty list (NO DEMO EVENTS!)
     return res.json({ events: [], source: 'none' });
   } catch (err: any) {
     console.error('Calendar server endpoint error:', err);
     return res.status(500).json({ error: err?.message || 'Eroare calendar' });
+  }
+});
+
+// 2. POST CALENDAR SYNC:
+// Receives imported real events from Google Calendar API and persists them permanently for all devices!
+app.post('/api/calendar/sync', (req, res) => {
+  try {
+    const { events } = req.body;
+    if (!Array.isArray(events)) {
+      return res.status(400).json({ error: 'Array-ul de evenimente este invalid.' });
+    }
+
+    // Filter out any dummy or demo events
+    const cleanEvents = events.filter((ev: any) => {
+      const id = String(ev.id || '');
+      return !id.startsWith('cormo-event-') && !id.startsWith('demo-');
+    });
+
+    writeJsonFile(EVENTS_FILE, cleanEvents);
+    console.log(`[Google Sync] Salvate ${cleanEvents.length} evenimente reale din calendar.`);
+    return res.json({ success: true, count: cleanEvents.length, events: cleanEvents });
+  } catch (err: any) {
+    console.error('Eroare salvare evenimente:', err);
+    return res.status(500).json({ error: err?.message || 'Eroare server la sincronizare' });
+  }
+});
+
+// 3. GET DRIVE RESOURCES:
+// Returns permanently persisted real Google Drive files for all devices!
+app.get('/api/resources', (_req, res) => {
+  try {
+    const stored = readJsonFile<any[]>(RESOURCES_FILE, []);
+    return res.json({ resources: stored });
+  } catch (err: any) {
+    console.error('Eroare citire resurse:', err);
+    return res.status(500).json({ error: err?.message || 'Eroare citire resurse' });
+  }
+});
+
+// 4. POST DRIVE RESOURCES SYNC:
+// Receives imported real Google Drive files and persists them permanently!
+app.post('/api/resources/sync', (req, res) => {
+  try {
+    const { resources } = req.body;
+    if (!Array.isArray(resources)) {
+      return res.status(400).json({ error: 'Array-ul de resurse este invalid.' });
+    }
+
+    // Filter out sample/dummy files
+    const cleanResources = resources.filter((r: any) => {
+      const url = String(r.driveUrl || '');
+      const id = String(r.id || '');
+      return !url.includes('1sample-') && !id.startsWith('res-1') && !id.startsWith('res-2') && !id.startsWith('res-3');
+    });
+
+    writeJsonFile(RESOURCES_FILE, cleanResources);
+    console.log(`[Google Sync] Salvate ${cleanResources.length} resurse reale din Google Drive.`);
+    return res.json({ success: true, count: cleanResources.length, resources: cleanResources });
+  } catch (err: any) {
+    console.error('Eroare salvare resurse:', err);
+    return res.status(500).json({ error: err?.message || 'Eroare server la salvare resurse' });
   }
 });
 

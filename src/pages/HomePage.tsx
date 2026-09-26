@@ -30,7 +30,7 @@ export const HomePage: React.FC = () => {
       {/* App Header & Cormorant Bird Emblem */}
       <section className="min-h-[calc(100vh-14rem)] sm:min-h-[calc(100vh-16rem)] flex flex-col justify-center items-center text-center space-y-6 pt-4 pb-12">
         <div className="flex justify-center">
-          <CormorantEmblem size="xl" color="#ffffff" />
+          <CormorantEmblem size="xl" />
         </div>
 
         <div className="space-y-2">
