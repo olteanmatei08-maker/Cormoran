@@ -1,18 +1,16 @@
 import React from 'react';
-import { Compass, BookOpen, Calendar, FolderKanban, Users, Award } from 'lucide-react';
+import { Compass, BookOpen, Calendar, FolderKanban, Users } from 'lucide-react';
 
-export type NavTab = 'acasa' | 'pedagogie' | 'calendar' | 'resurse' | 'despre' | 'progres';
+export type NavTab = 'acasa' | 'pedagogie' | 'calendar' | 'resurse' | 'despre';
 
 interface BottomNavProps {
   activeTab: NavTab;
   setActiveTab: (tab: NavTab) => void;
-  isLoggedIn?: boolean;
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({
   activeTab,
   setActiveTab,
-  isLoggedIn = false,
 }) => {
   const tabs = [
     {
@@ -40,15 +38,6 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       label: 'Despre',
       icon: Users,
     },
-    ...(isLoggedIn
-      ? [
-          {
-            id: 'progres' as const,
-            label: 'Progres',
-            icon: Award,
-          },
-        ]
-      : []),
   ];
 
   return (

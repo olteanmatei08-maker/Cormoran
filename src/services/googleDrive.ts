@@ -1,4 +1,5 @@
-import { GOOGLE_OAUTH_CLIENT_ID } from './googleCalendar';
+export const GOOGLE_OAUTH_CLIENT_ID =
+  '979902519749-olg16cltl2ik5g5h1hv8ci13s1jb2ua3.apps.googleusercontent.com';
 
 export const DRIVE_SCOPES =
   'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file';

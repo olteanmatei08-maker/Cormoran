@@ -11,10 +11,7 @@ import { PedagogyPage } from './pages/PedagogyPage';
 import { CalendarPage } from './pages/CalendarPage';
 import { ResourcesPage } from './pages/ResourcesPage';
 import { AboutPage } from './pages/AboutPage';
-import { ProgressPage } from './pages/ProgressPage';
 import { NotificationPromptModal } from './components/NotificationPromptModal';
-import { AccountModal } from './components/AccountModal';
-import { subscribeToAuth, AppUser } from './services/authService';
 import {
   registerServiceWorker,
   checkAndDispatchEventNotifications,
@@ -30,8 +27,6 @@ const EVENTS_CACHE_KEY = 'cormo_patrol_events_cache';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('acasa');
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
-  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
 
   // Handle tab switching
   const handleSelectTab = (tab: NavTab) => {
@@ -42,22 +37,10 @@ export default function App() {
     }
   };
 
-  // Fallback to 'acasa' if user logs out while on 'progres' tab
-  useEffect(() => {
-    if (!currentUser && activeTab === 'progres') {
-      setActiveTab('acasa');
-    }
-  }, [currentUser, activeTab]);
-
-  // Initialize theme, notifications, auth, and navigation listeners
+  // Initialize theme, notifications, and navigation listeners
   useEffect(() => {
     applyThemeToDOM(getAppTheme());
     const unsubTheme = subscribeToTheme((t) => applyThemeToDOM(t));
-
-    // Listen to Firebase auth state persistently across app sessions
-    const unsubAuth = subscribeToAuth((user) => {
-      setCurrentUser(user);
-    });
 
     registerServiceWorker();
 
@@ -120,7 +103,6 @@ export default function App() {
 
     return () => {
       unsubTheme();
-      unsubAuth();
       clearInterval(interval);
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleFocus);
@@ -143,8 +125,6 @@ export default function App() {
       {/* Top Header */}
       <Header
         onNavigateToCalendar={() => handleSelectTab('calendar')}
-        currentUser={currentUser}
-        onOpenAccount={() => setIsAccountModalOpen(true)}
       />
 
       {/* Main Content Area - padded at bottom for the frozen bottom navigation bar */}
@@ -154,25 +134,16 @@ export default function App() {
         {activeTab === 'calendar' && <CalendarPage />}
         {activeTab === 'resurse' && <ResourcesPage />}
         {activeTab === 'despre' && <AboutPage />}
-        {activeTab === 'progres' && currentUser && <ProgressPage currentUser={currentUser} />}
       </main>
 
       {/* Frozen Bottom Navigation Bar */}
       <BottomNav
         activeTab={activeTab}
         setActiveTab={handleSelectTab}
-        isLoggedIn={!!currentUser}
       />
 
       {/* Scout Notification Permission Modal (shown on first open) */}
       <NotificationPromptModal />
-
-      {/* Scout Account Modal */}
-      <AccountModal
-        isOpen={isAccountModalOpen}
-        onClose={() => setIsAccountModalOpen(false)}
-        currentUser={currentUser}
-      />
     </div>
   );
 }

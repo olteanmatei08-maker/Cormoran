@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { CalendarEvent } from '../types';
 import {
-  getStoredAuth,
-  getValidAccessToken,
-  requestGoogleCalendarAccess,
-  fetchCalendarEvents,
+  getCachedCalendarEvents,
+  fetchPublicCalendarEvents,
+  getPublicCalendarConfig,
+  savePublicCalendarConfig,
+  saveCachedCalendarEvents,
 } from '../services/googleCalendar';
 import {
   Calendar as CalendarIcon,
@@ -14,38 +15,15 @@ import {
   ExternalLink,
   ChevronLeft,
   ChevronRight,
-  Info,
   CalendarDays,
   CloudSun,
   WifiOff,
+  Settings,
+  X,
+  Check,
 } from 'lucide-react';
 import { WeatherCluj } from '../components/WeatherCluj';
 import { checkAndDispatchEventNotifications } from '../services/notificationService';
-import {
-  subscribeToFirestoreEvents,
-  saveFirestoreEvent,
-} from '../services/firebaseService';
-
-const EVENTS_CACHE_KEY = 'cormo_patrol_events_cache';
-
-// Load cached events from local storage immediately (even if offline)
-function getCachedEvents(): CalendarEvent[] {
-  try {
-    const raw = localStorage.getItem(EVENTS_CACHE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-// Persist events to local storage so they are always accessible offline
-function saveCachedEvents(events: CalendarEvent[]) {
-  try {
-    localStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(events));
-  } catch {
-    // Ignore storage quota
-  }
-}
 
 // Safely parse local date strings without UTC shift
 function parseDateSafe(dateStr: string): Date {
@@ -56,7 +34,7 @@ function parseDateSafe(dateStr: string): Date {
   return new Date(dateStr);
 }
 
-// Extract exact hours only if set in Google Calendar. Never guess!
+// Extract exact hours only if set in Calendar. Never guess!
 function getEventTimeDisplay(ev: CalendarEvent): string | null {
   if (ev.hasTime === false || !ev.start.includes('T') || ev.start.length === 10) {
     return null;
@@ -111,15 +89,10 @@ function getRelativeDateLabel(dateStr: string): string | null {
   return null;
 }
 
-interface CalendarPageProps {
-  onCalendarChange?: (name: string, isConnected: boolean) => void;
-}
-
-export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) => {
-  const [auth, setAuth] = useState(getStoredAuth());
-  const [events, setEvents] = useState<CalendarEvent[]>(getCachedEvents);
+export const CalendarPage: React.FC = () => {
+  // 1. Instantaneous render directly from localStorage
+  const [events, setEvents] = useState<CalendarEvent[]>(getCachedCalendarEvents);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -132,95 +105,34 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<number>(new Date().getDate());
 
-  // Real-time synchronization from Firestore
-  useEffect(() => {
-    const unsub = subscribeToFirestoreEvents((firestoreEvents) => {
-      if (firestoreEvents.length > 0) {
-        setEvents((prev) => {
-          const map = new Map<string, CalendarEvent>();
-          prev.forEach((ev) => map.set(ev.id, ev));
-          firestoreEvents.forEach((ev) => map.set(ev.id, ev));
-          const merged = Array.from(map.values()).sort(
-            (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-          );
-          saveCachedEvents(merged);
-          checkAndDispatchEventNotifications(merged);
-          return merged;
-        });
-      }
-    });
-    return () => unsub();
-  }, []);
+  // Settings modal for calendar source
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [config, setConfig] = useState(getPublicCalendarConfig());
+  const [savedSuccess, setSavedSuccess] = useState(false);
 
-  // Notify parent of connection status
-  useEffect(() => {
-    if (onCalendarChange) {
-      onCalendarChange('Google Calendar', auth.isConnected);
-    }
-  }, [auth.isConnected, onCalendarChange]);
-
-  // Load events directly from user's primary Google Calendar with auto-renewing token
-  const loadPrimaryCalendarEvents = useCallback(async (silent: boolean = false) => {
-    // If offline, skip network requests silently and keep cached events
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      return;
-    }
+  // Background fetch function (never blocks UI or prompts for login)
+  const refreshEvents = useCallback(async (silent: boolean = false) => {
+    if (!navigator.onLine) return;
 
     try {
       if (!silent) setLoading(true);
-      setError(null);
-
-      // Get valid access token (silently refreshed if expired)
-      const token = await getValidAccessToken();
-      if (!token) {
-        if (!silent) {
-          setError('Pentru sincronizarea completă, apasă pe Conectează Google Calendar.');
-        }
-        return;
+      const res = await fetchPublicCalendarEvents();
+      if (res.events && res.events.length > 0) {
+        setEvents(res.events);
+        checkAndDispatchEventNotifications(res.events);
       }
-
-      const googleEvents = await fetchCalendarEvents(token, 'primary');
-      googleEvents.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-
-      if (googleEvents.length > 0) {
-        setEvents((prev) => {
-          const map = new Map<string, CalendarEvent>();
-          // Keep non-google events if any
-          prev.filter((e) => !e.googleEventId).forEach((ev) => map.set(ev.id, ev));
-          googleEvents.forEach((ev) => map.set(ev.id, ev));
-          const merged = Array.from(map.values()).sort(
-            (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
-          );
-          saveCachedEvents(merged);
-          checkAndDispatchEventNotifications(merged);
-          return merged;
-        });
-
-        // Sync fetched Google events to Firestore in the background
-        googleEvents.forEach((ev) => {
-          saveFirestoreEvent(ev).catch(() => {});
-        });
-      }
-
-      setAuth(getStoredAuth());
-    } catch (err: any) {
-      console.warn('Sync issue (keeping existing cached events):', err);
-      // We NEVER wipe existing events or disconnect the user on network/temporary errors
-      if (!silent && navigator.onLine) {
-        setError(err?.message || 'Nu s-au putut actualiza evenimentele în acest moment.');
-      }
+    } catch (err) {
+      console.warn('Background calendar sync error:', err);
     } finally {
       if (!silent) setLoading(false);
     }
   }, []);
 
-  // Online / Offline event listener: automatically updates when connection returns
+  // Online / Offline listener
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      setError(null);
-      // Automatically refresh and fetch any new/modified events when connection is restored!
-      loadPrimaryCalendarEvents(true);
+      refreshEvents(true);
     };
 
     const handleOffline = () => {
@@ -234,57 +146,46 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [loadPrimaryCalendarEvents]);
+  }, [refreshEvents]);
 
-  // Initial load when component mounts if connected
+  // Initial background refresh on mount
   useEffect(() => {
-    if (auth.isConnected && isOnline) {
-      loadPrimaryCalendarEvents(true);
-    }
-  }, [auth.isConnected, isOnline, loadPrimaryCalendarEvents]);
+    refreshEvents(true);
+  }, [refreshEvents]);
 
-  // Auto-sync in background every 60 seconds (non-intrusive) when online
+  // Auto-refresh in background every 60 seconds when tab is active
   useEffect(() => {
-    if (!auth.isConnected || !isOnline) return;
+    if (!isOnline) return;
 
     const interval = setInterval(() => {
-      loadPrimaryCalendarEvents(true);
+      refreshEvents(true);
     }, 60000);
 
     return () => clearInterval(interval);
-  }, [auth.isConnected, isOnline, loadPrimaryCalendarEvents]);
+  }, [isOnline, refreshEvents]);
 
-  // Auto-sync when coming back to tab
+  // Auto-refresh when tab gains focus
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && auth.isConnected && isOnline) {
-        loadPrimaryCalendarEvents(true);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && isOnline) {
+        refreshEvents(true);
       }
     };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleVisibilityChange);
-
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleVisibility);
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleVisibility);
     };
-  }, [auth.isConnected, isOnline, loadPrimaryCalendarEvents]);
+  }, [isOnline, refreshEvents]);
 
-  // Connect Google account
-  const handleConnectGoogle = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      await requestGoogleCalendarAccess(true);
-      const updatedAuth = getStoredAuth();
-      setAuth(updatedAuth);
-      await loadPrimaryCalendarEvents(false);
-    } catch (err: any) {
-      setError(err?.message || 'Conectarea a fost anulată.');
-    } finally {
-      setLoading(false);
-    }
+  const handleSaveSettings = (e: React.FormEvent) => {
+    e.preventDefault();
+    savePublicCalendarConfig(config);
+    setSavedSuccess(true);
+    setTimeout(() => setSavedSuccess(false), 2000);
+    refreshEvents(false);
+    setIsSettingsOpen(false);
   };
 
   // Filter events into upcoming
@@ -346,10 +247,10 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
           </button>
         </div>
 
-        {/* Calendar Specific Actions (only when in calendar tab) */}
+        {/* Calendar Specific Actions */}
         {activeSubTab === 'calendar' && (
           <div className="flex items-center gap-2">
-            {/* View toggle (Viitoare vs Lună) ALWAYS available */}
+            {/* View toggle (Viitoare vs Lună) */}
             <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
               <button
                 onClick={() => setViewMode('upcoming')}
@@ -373,27 +274,30 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
               </button>
             </div>
 
-            {/* Refresh / Sync Button */}
-            {auth.isConnected ? (
-              <button
-                onClick={() => loadPrimaryCalendarEvents(false)}
-                disabled={loading || !isOnline}
-                className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer text-xs flex items-center gap-1.5 active:scale-95 shadow-sm disabled:opacity-50"
-                title={isOnline ? 'Actualizează evenimentele din calendar' : 'Ești offline (evenimentele sunt salvate)'}
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
-                <span className="hidden sm:inline">{loading ? 'Se actualizează...' : 'Actualizează'}</span>
-              </button>
-            ) : (
-              <button
-                onClick={handleConnectGoogle}
-                disabled={loading || !isOnline}
-                className="px-3.5 py-1.5 rounded-xl bg-emerald-900 hover:bg-emerald-800 border border-emerald-600/50 text-white font-semibold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-emerald-950/60 disabled:opacity-50"
-              >
-                <CalendarIcon className="w-3.5 h-3.5" />
-                <span>Conectează Google Calendar</span>
-              </button>
-            )}
+            {/* Manual Refresh Button */}
+            <button
+              onClick={() => refreshEvents(false)}
+              disabled={loading || !isOnline}
+              className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer text-xs flex items-center gap-1.5 active:scale-95 shadow-sm disabled:opacity-50"
+              title={isOnline ? 'Actualizează evenimentele' : 'Ești offline (evenimentele sunt salvate)'}
+              aria-label="Actualizează evenimentele"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
+              <span className="hidden sm:inline">{loading ? 'Se actualizează...' : 'Actualizează'}</span>
+            </button>
+
+            {/* Quick config modal trigger */}
+            <button
+              onClick={() => {
+                setConfig(getPublicCalendarConfig());
+                setIsSettingsOpen(true);
+              }}
+              className="p-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              title="Configurare ID Calendar Public"
+              aria-label="Configurare Calendar"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
       </section>
@@ -411,38 +315,12 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
         </div>
       )}
 
-      {error && activeSubTab === 'calendar' && isOnline && (
-        <div className="p-3 bg-red-950/40 border border-red-900/60 rounded-xl text-red-300 text-xs flex items-center gap-2">
-          <Info className="w-4 h-4 shrink-0 text-red-400" />
-          <span>{error}</span>
-        </div>
-      )}
-
       {/* METEO PAGE VIEW (SATURDAY ONLY) */}
       {activeSubTab === 'meteo' && <WeatherCluj />}
 
       {/* CALENDAR PAGE VIEW */}
       {activeSubTab === 'calendar' && (
         <>
-          {/* Subtle connection hint if not yet connected */}
-          {!auth.isConnected && (
-            <div className="p-4 rounded-2xl bg-emerald-950/30 border border-emerald-800/40 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-2.5 text-slate-300 text-center sm:text-left">
-                <CalendarIcon className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>
-                  Conectează contul Google pentru a menține sincronizate automat toate activitățile de patrulă.
-                </span>
-              </div>
-              <button
-                onClick={handleConnectGoogle}
-                disabled={loading || !isOnline}
-                className="px-4 py-2 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-white font-bold text-xs transition-all shrink-0 cursor-pointer shadow-md shadow-emerald-950/70 disabled:opacity-50"
-              >
-                {loading ? 'Se conectează...' : 'Conectează Google'}
-              </button>
-            </div>
-          )}
-
           {/* UPCOMING EVENTS VIEW - ALWAYS VISIBLE EVEN OFFLINE */}
           {viewMode === 'upcoming' && (
             <section className="space-y-3">
@@ -450,12 +328,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
                 <span className="font-semibold uppercase tracking-wider text-slate-400">
                   Evenimente care urmează ({upcomingEvents.length})
                 </span>
-                <span className="text-[11px] text-slate-500">
-                  {!isOnline
-                    ? 'Salvate local (Offline)'
-                    : auth.isConnected
-                    ? 'Sincronizat permanent'
-                    : 'Date salvate'}
+                <span className="text-[11px] text-emerald-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Sincronizat permanent</span>
                 </span>
               </div>
 
@@ -518,7 +393,6 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
                             </span>
                           </div>
                         )}
-                        {/* Render location ONLY if available and non-empty */}
                         {hasLocation && (
                           <div className="flex items-center gap-1.5 text-slate-400">
                             <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -542,7 +416,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
                   <CalendarDays className="w-8 h-8 text-slate-600 mx-auto mb-2" />
                   <p className="text-slate-200 font-semibold">Nu sunt evenimente viitoare programate.</p>
                   <p className="text-xs text-slate-500">
-                    Orice eveniment adăugat în Google Calendar pe telefon sau PC va apărea automat aici.
+                    Orice eveniment adăugat în calendarul de patrulă va apărea automat aici pe toate dispozitivele.
                   </p>
                 </div>
               )}
@@ -707,11 +581,10 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
                                 </span>
                               </div>
                             )}
-                            {/* Render location ONLY if available and non-empty */}
                             {hasLocation && (
                               <div className="flex items-center gap-1.5 text-slate-400">
                                 <MapPin className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                <span>{ev.location!.trim()}</span>
+                                <span className="truncate max-w-[260px] sm:max-w-md">{ev.location!.trim()}</span>
                               </div>
                             )}
                           </div>
@@ -726,14 +599,97 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ onCalendarChange }) 
                     })}
                   </div>
                 ) : (
-                  <div className="py-6 text-center text-xs text-slate-500">
+                  <p className="text-xs text-slate-500 py-3 text-center">
                     Niciun eveniment programat în această zi.
-                  </div>
+                  </p>
                 )}
               </div>
             </section>
           )}
         </>
+      )}
+
+      {/* Calendar Source Configuration Modal (Read-Only Public Setup) */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0c1017] border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <CalendarIcon className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-base font-bold text-white">Configurare Calendar Public</h3>
+              </div>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-slate-400 hover:text-white p-1"
+                aria-label="Închide"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Calendarul se descarcă automat pe orice dispozitiv sau telefon fără a cere logare. Poți schimba ID-ul calendarului public sau cheia API dacă este nevoie.
+            </p>
+
+            <form onSubmit={handleSaveSettings} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  ID Calendar Google (Public):
+                </label>
+                <input
+                  type="text"
+                  value={config.calendarId}
+                  onChange={(e) => setConfig({ ...config, calendarId: e.target.value })}
+                  placeholder="ex: olteanmatei08@gmail.com"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Cheie API Google Calendar (Opțional):
+                </label>
+                <input
+                  type="password"
+                  value={config.apiKey}
+                  onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
+                  placeholder="AIzaSy..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  URL Feed iCal / .ics (Opțional):
+                </label>
+                <input
+                  type="url"
+                  value={config.icalUrl}
+                  onChange={(e) => setConfig({ ...config, icalUrl: e.target.value })}
+                  placeholder="https://calendar.google.com/calendar/ical/.../public/basic.ics"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-900 text-xs text-slate-400 hover:text-white border border-slate-800"
+                >
+                  Anulează
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-xs font-bold text-white shadow-md flex items-center gap-1.5"
+                >
+                  {savedSuccess ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : null}
+                  <span>Salvează</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );
